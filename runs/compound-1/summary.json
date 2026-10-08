@@ -1,0 +1,25 @@
+{
+  "system": "systems/compound.py",
+  "starter_version": "2026-10-05.2",
+  "backend": "course",
+  "model": null,
+  "variant": "compound",
+  "max_calls": 10,
+  "requests_file": "data/public.jsonl",
+  "requests": 10,
+  "errors": 0,
+  "declined": 0,
+  "model_calls": {
+    "total": 10,
+    "max_per_request": 1
+  },
+  "cost_usd": 0.0042,
+  "seconds": 4.1,
+  "overrides": [],
+  "steps": {
+    "decide": {
+      "input": "Request",
+      "output": "Choice"
+    }
+  }
+}
