@@ -15,7 +15,7 @@ Milestone 2 needs at least 2 connected model steps. To check, run `python -m p1.
 import re
 from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from p1 import Answer, Request, Candidate, call_json, step #Clsses, function #function
 from p1.render import render_candidate
@@ -409,13 +409,20 @@ def decide(data: DecisionInput) -> GameEvaluation:
 
 def answer(request: Request) -> Answer:
     # 1. MODEL CALL: extract requirements.
-    requirements = extract_requirements(request)
+    try:
+        requirements = extract_requirements(request)
+    except ValidationError:
+        return Answer(pick=None, explanation="Could not validate the extracted requirements; declining.")
 
     # 2. Five model calls: evaluate one candidate at a time.
     evaluations = []
     for candidate in request.candidates:
         decision_input = DecisionInput(requirements=requirements, candidate=candidate)
-        evaluations.append(decide(decision_input))
+        try:
+            evaluations.append(decide(decision_input))
+        except ValidationError:
+            # Do not guess missing checks or accept a candidate with malformed evidence.
+            return Answer(pick=None, explanation="Could not validate a candidate evaluation; declining.")
 
     # 3. Python selects the first candidate whose checks all pass.
     for index in range(len(request.candidates)):
