@@ -15,7 +15,7 @@ Milestone 2 needs at least 2 connected model steps. To check, run `python -m p1.
 import re
 from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from p1 import Answer, Request, Candidate, call_json, step #Clsses, function #function
 from p1.render import render_candidate
@@ -65,6 +65,12 @@ class GameEvaluation(BaseModel):
             return [{"PASS": "NO", "FAIL": "YES"}.get(item, item)
                     if isinstance(item, str) else item for item in value]
         return value
+
+    @field_validator("min_players", "max_players", "max_minutes", mode="before")
+    @classmethod
+    def zero_means_not_given(cls, value):
+        # The model sometimes writes 0 for "not given"; the contract uses null for that.
+        return None if value == 0 else value
 
 
 def quote_exists(text: str, quote: str) -> bool:
@@ -408,20 +414,49 @@ def decide(data: DecisionInput) -> GameEvaluation:
 
 
 def answer(request: Request) -> Answer:
-    # 1. MODEL CALL: extract requirements.
-    requirements = extract_requirements(request)
+    # A reply that doesn't fit its type raises ValidationError. Every answered call counts toward the
+    # limit of 10, so retries only use calls that no later step needs.
+    calls_left = 10
 
-    # 2. Five model calls: evaluate one candidate at a time.
+    # 1. MODEL CALL: extract requirements, retried once if the reply doesn't fit.
+    requirements = None
+    for attempt in range(2):
+        if calls_left - len(request.candidates) <= 0:
+            break
+        calls_left -= 1
+        try:
+            requirements = extract_requirements(request)
+            break
+        except ValidationError:
+            pass
+    if requirements is None:
+        return Answer(pick=None, explanation="The request could not be read, so no game could be confirmed.")
+
+    # 2. Five model calls: evaluate one candidate at a time. A reply that doesn't fit is retried once;
+    #    a candidate still without a valid evaluation is never picked.
     evaluations = []
-    for candidate in request.candidates:
+    for index, candidate in enumerate(request.candidates):
         decision_input = DecisionInput(requirements=requirements, candidate=candidate)
-        evaluations.append(decide(decision_input))
+        evaluation = None
+        later_candidates = len(request.candidates) - index - 1
+        for attempt in range(2):
+            if calls_left - later_candidates <= 0:
+                break
+            calls_left -= 1
+            try:
+                evaluation = decide(decision_input)
+                break
+            except ValidationError:
+                pass
+        evaluations.append(evaluation)
 
     # 3. Python selects the first candidate whose checks all pass.
     for index in range(len(request.candidates)):
         candidate = request.candidates[index]
         evaluation = evaluations[index]
         card = candidate.card
+        if evaluation is None:
+            continue
 
         # Missing checks must not accidentally count as a pass.
         if requirements.avoid and len(evaluation.avoid) != len(requirements.avoid):
