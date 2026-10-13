@@ -26,6 +26,7 @@ class Requirements(BaseModel):
     max_minutes: int | None = Field(default=None, ge=1)
     min_age: int | None = Field(default=None, description="Youngest player's age")
     mode: Literal["cooperative", "competitive"] | None = None
+    complexity: Literal["light", "medium", "heavy"] | None = None
     have: list[str] = Field(default_factory=list) # ommited fields default to []
     avoid: list[str] = Field(default_factory=list)
     wish: list[str] = Field(default_factory=list)
@@ -42,11 +43,30 @@ class GameEvaluation(BaseModel):
     min_age: Literal["PASS", "FAIL", "UNKNOWN"]
     have: list[Literal["PASS", "FAIL", "UNKNOWN"]]
     avoid: list[Literal["PASS", "FAIL", "UNKNOWN"]]
+    # Exact sentence from the description that shows each avoided feature, "" when there is none.
+    avoid_quotes: list[str] = Field(default_factory=list)
+    # What the description says about how hard the rules are. Python applies the complexity rubric.
+    rules_wording: Literal["easy", "complex", "none"] = "none"
     explanation: str
 
 
+Feature = Literal["fighting", "violence", "horror", "timer", "player elimination"]
+
+
+class AvoidInput(BaseModel):
+    """One candidate that passed every other check, and the features the request prohibits."""
+    features: list[Feature]
+    candidate: Candidate
+
+
+class AvoidCheck(BaseModel):
+    """One entry per feature, in the same order as the input. YES means the game has the feature."""
+    quotes: list[str]
+    has_feature: list[Literal["YES", "NO"]]
+
+
 @step
-def extract_requirements(request: Request) -> Requirements:
+def extract_requirements(request: Request) -> Requirements: #includes players,  max_minutes, min_age, mode, have, avoid, wish
 
     request_only = request.request
 
@@ -67,15 +87,25 @@ def extract_requirements(request: Request) -> Requirements:
       Put the number in players, not in have.
     - Time: put the maximum minutes in max_minutes, not in have. "About an hour" and "an hour tops"
       both mean "maximum 60 minutes"; two hours means 120 minutes.
-    - Complexity: put "light complexity" for easy rules, simple, beginners or casual players;
-      "heavy complexity" for deep strategy, meaty or nothing light;
-      "medium complexity" for not too simple and not too heavy.
+    - Complexity: put the level in complexity, not in have. "light" for easy rules, simple, beginners,
+      never play board games or casual players; "heavy" for deep strategy, meaty or nothing light;
+      "medium" for not too simple and not too heavy. If no level is requested, set complexity to null.
     - Cooperative or competitive: put the requested mode in mode, not in have.
-      Playing together against the game means cooperative; head to head means competitive.
+      "Together against the game", "team up against the game" and "as one team" mean cooperative;
+      "head to head" and "against each other" mean competitive.
       Just playing together, being friends or being a couple does NOT imply cooperative.
       If no mode is requested, set mode to null.
-    - Things to avoid: put fighting, violence, horror, timers or player elimination in avoid when requested. "Nobody sitting out" means avoid player elimination.
-    - Age: record the youngest explicitly stated player age in min_age. Do not guess an age.
+    - Things to avoid: write each one using exactly one of these words:
+      "fighting" for no fighting or no combat;
+      "violence" for nothing violent;
+      "horror" for nothing scary or nothing creepy;
+      "timer" for no timers or no racing against the clock;
+      "player elimination" for nobody knocked out or nobody sitting out.
+    - Age: record the youngest stated age of a child or teenager who will play in min_age ("our 8-year-old" means 8).
+      Adults ("in his thirties", "early twenties") are not an age requirement: use null. Do not guess an age.
+    - Tastes are not requirements. "We love civilization games" or "we usually play card games" describe
+      what the players enjoy; do not put them in have. Only put something in have when the request says this
+      game must have it ("we want", "we need", "it has to", "must").
     - "We want" and "we need" introduce requirements, not wishes.
     - Wishes: "would be nice", "would be amazing" and "we'd love" introduce wishes.
       Keep the whole optional preference in wish, including details that explain it.
@@ -93,21 +123,24 @@ def extract_requirements(request: Request) -> Requirements:
     - "players": an integer or null when unspecified.
     - "max_minutes": an integer or null when unspecified.
     - "mode": "cooperative", "competitive", or null when unspecified.
+    - "complexity": "light", "medium", "heavy", or null when unspecified.
 
     Put each have, avoid or wish characteristics in a separate string.
     Use [] for empty have, avoid, and wish lists.
     Use an integer for min_age, or null when unspecified.
+    Never repeat players, time, age, mode or complexity inside have.
     Do not include Markdown formatting.
 
     Example structure:
     {
-    "have": ["light complexity"],
+    "have": [],
     "avoid": ["fighting"],
     "wish": [],
     "min_age": 10,
     "players": 4,
     "max_minutes": 60,
-    "mode": null
+    "mode": null,
+    "complexity": "light"
     }
     
     """  
@@ -126,7 +159,7 @@ def decide(data: DecisionInput) -> GameEvaluation:
     
     instructions = f"""You will receive extracted requirements and ONE candidate game. Evaluate this game against each requirement. Python will select the game.
     
-    The request containts these fields:
+    The request contains these fields:
     - players: required player count, None if unspecified.
     - max_minutes: maximum play time, None if unspecified.
     - have: a list of characteristics the game MUST have, empty if none.
@@ -143,28 +176,16 @@ def decide(data: DecisionInput) -> GameEvaluation:
     Information about type of requirements (could be present or not in the request):
 	- Players: The number of players must fit within the range of the game description. Count everyone playing, including the writer and that number must be inside the game's range. Example: "me and my three friends" is equivalent to 4 players.
 	- Time: The game's longest listed time must fit the user's requirements. For example, if the game lasts from 30-60 minutes, this would exceed a user requirement of "max 45 minutes." The game must be up to this range and not exceed the limits. If the user specifies:  "up to x minutes", the game suggested must not exceed "x" minutes, even if it is a range. 
-    - Complexity: apply these rubric rules, not an intuitive estimate of difficulty.
-        * Weight 1.3 or less means light and not heavy; weight 4.0 or more means
-          heavy and not light. These extremes override all other clues.
-        * Otherwise, light YES clues: easy/simple rules in the description; children's
-          or party game type; family game type with weight under 2.0.
-          Light NO clues: complex rules or experienced players in the description;
-          only strategy/thematic/war/abstract types with weight at least 2.5.
-        * Heavy YES clues: complex rules or experienced players in the description;
-          strategy or war game, not also family, with weight at least 3.5.
-          Heavy NO clues: easy/simple rules in the description; children's, party or
-          family game type.
-        * For light and heavy separately, conflicting clues or no applicable clues
-          mean UNKNOWN. If complexity is not listed, only description wording can decide.
-        * Medium: reject if light or heavy under the rules above. Otherwise, medium
-          requires a weight between 2.0 and 3.5; outside that band or without a weight,
-          medium is UNKNOWN.
-        * Description comparisons such as "lighter than similar games" count.
-          "Easy to learn but challenging to master" does not decide. Ignore difficulty
-          of winning, optional expert variants, one small rule, edition changes and
-          marketing audience. Use the card's game types for family/party classification.
 	- Age requirement: If the youngest player's age is specified, the game's listed minimum age must be less than or equal to that age. If the player's age is unspecified, skip this check. For example, a game rated 12+ fails for a youngest player aged 10.
-	- Cooperative vs Competitive: A game whose mechanics include "Cooperative Game" is cooperative, and a game without it is competitive.
+
+    Rules wording (always fill "rules_wording"; Python combines it with the card's weight and types):
+        - "easy": the description says the rules or gameplay are easy, simple or quick to learn, or compares the game as
+          lighter ("lighter than many similar games", "a light civilization game", "elegantly simple gameplay").
+        - "complex": the description says the rules are complex or for experienced players, or compares the game as heavier.
+        - "none": no such statement; wording that says both ("easy to learn, but challenging to master"); or wording about
+          something other than how hard the rules are: how hard the game is to win, one part of the game, an optional
+          expert variant, changes from another edition, or who it is marketed to ("family game", "casual audience").
+        - Do not use the weight or game types for rules_wording. Only the description's words count.
 
     Missing information:
         - Use the card's player range, maximum play time and minimum age. If a required field is missing, look for that information in the description. If neither gives it, mark UNKNOWN. Learning time is not play time, and separately sold expansions do not count toward the supported player count.
@@ -182,6 +203,15 @@ def decide(data: DecisionInput) -> GameEvaluation:
           Elimination includes sitting out a round, but not losing pieces while still playing.
         - Empty tag lists are not hidden information. If neither tags nor description
           show a prohibited feature, that avoidance requirement passes.
+        - These do NOT count: figures of speech ("disease-fighting", "fight over resources", "combat misfortune",
+          "battle against each other to spread plagues"); competing, rivals, dominating or controlling areas;
+          a theme word such as "military" without attacks in play; contests only called duels or battles;
+          a penalty called an attack (thieves steal goods); abstract captures; a genre label alone;
+          generic fantasy monsters or cartoon spookiness for horror; words about pace ("fast-paced") for timers;
+          losing points, cards or pieces while still playing for elimination.
+        - For each avoid item marked FAIL, copy into "avoid_quotes" the exact sentence from the description that
+          shows the feature happening in play. If you cannot copy such a sentence and no tag matches, mark PASS
+          and use "". The quote must be copied word for word; Python checks it against the description.
 
     Labeling Guidelines:
         - only use the given information and do not scrape beyond or use insider previously known information.
@@ -191,12 +221,14 @@ def decide(data: DecisionInput) -> GameEvaluation:
           broken, UNKNOWN means there is not enough evidence to check it.
         - For players, time and age, use PASS when that requirement is unspecified.
         - For each avoid item, PASS means the prohibited feature is absent.
-        - Do not choose a game. Return checks for this one game. Python checks the requested mode separately.
+        - Do not choose a game. Return checks for this one game. Python checks the requested mode and complexity separately.
 
     Return one JSON object with these fields (do not wrap it in a candidate letter):
     - "players", "max_minutes", "min_age": each is "PASS", "FAIL" or "UNKNOWN".
     - "have": one status per have requirement, in the SAME order as the input.
     - "avoid": one status per avoid requirement, in the SAME order as the input.
+    - "avoid_quotes": one string per avoid requirement, in the SAME order as the input ("" when there is no quote).
+    - "rules_wording": "easy", "complex" or "none".
     - "explanation": one plain text string, not an object or list. Example: "explanation": "The game supports four players."
     Use [] when the corresponding requirement list is empty. Do not omit checks.
     Ensure the statuses agree with the evidence in your explanation.
@@ -220,6 +252,177 @@ def decide(data: DecisionInput) -> GameEvaluation:
 
 
 
+# RUBRIC.md section 4, one definition per feature. Only the requested features go into the prompt.
+FEATURE_RULES = {
+    "fighting": """FIGHTING: the players' characters or creatures attack, battle or duel other characters or creatures
+    as something players do.
+    Counts: "fight against villains"; "swords, which are used to fight the monsters"; "vanquish the treacherous
+    Darkhouse"; "the Shark wins by successfully attacking the Octopus".
+    Does NOT count: armies, fleets or units attacking on a map (Risk); raiding, pillaging or conquering to score;
+    an assassination that is only the goal of a bluffing game; figures of speech ("disease-fighting specialists",
+    "fight over scarce access to Pearls", "battle against each other to spread their plagues", "combat the rising
+    tide", "fast-paced fight to the finish"); a fight that is only backstory; attacks on something that is not a
+    character or creature ("destroy your opponents' sanity"); contests only called duels or battles (an auction
+    called a duel, rock-paper-scissors battles); a penalty the game calls an attack (thieves steal goods); abstract
+    captures as in chess; a genre label alone ("dungeon crawler"); competing, rivals, dominating or controlling areas.""",
+    "violence": """VIOLENCE: the game is about war, raiding, killing or other violence, whether or not players fight.
+    Counts: everything that counts as fighting; war and battles between armies, fleets or units ("colonization and
+    war", "attacking steals a city"); raiding, pillaging and conquest; killing as the goal.
+    Does NOT count: a penalty the game calls an attack; figures of speech and metaphors ("disease-fighting",
+    "fight over scarce access to Pearls"); a grim backstory such as a plague.""",
+    "horror": """HORROR: the game is meant to frighten or disturb. It presents horror creatures (vampires, zombies,
+    werewolves, Cthulhu-style monsters), threatening ghosts or hauntings, being hunted, or gore as something frightening.
+    Counts: "transforms all the inhabitants into vampires"; "an alien entity picks up your scent and begins to hunt
+    you"; "an adventure in a haunted house" with "murderous Skeletons".
+    Does NOT count: a horror creature on its own; generic fantasy monsters and dungeons; harmless or helpful ghosts;
+    undead or demons as enemies in heroic fantasy or comic games; a horror word only in a licensed title; realistic
+    threats not framed as frightening (a shark menacing swimmers); cartoon spookiness in family or children's games;
+    one horror character among many; giant monsters smashing a city; murder mysteries; fearsome warriors.""",
+    "timer": """TIMER: play involves racing a clock or a sand timer, or everyone playing at once as fast as they can.
+    Counts: "once the five-minute timer starts"; "playing at the same time"; grabbing or running at the same moment
+    ("run around the table to try to be the first back"); a timed turn ("as many titles as possible in 30 seconds").
+    Does NOT count: a countdown track that ends the game; choosing actions at the same time without racing; words
+    about pace ("fast-paced", "turns proceed quickly"); racing as a theme (betting on racing camels); an optional
+    timer the rules don't require.""",
+    "player elimination": """PLAYER ELIMINATION: a player can be knocked out and has to sit and watch while the
+    others keep playing, for the rest of the game or for the rest of a round.
+    Counts: "the last person alive is the winner"; elimination the rules make unavoidable ("the first player to win
+    all the cards is the winner", so with three or more players anyone who runs out of cards stops); sitting out
+    the rest of a round.
+    Does NOT count: losing points, cards, pieces or characters while still playing; skipping a single turn;
+    a cooperative team losing together; a two-player game where knocking the other player out ends the game;
+    a knocked-out player who keeps playing in another role.""",
+}
+
+
+@step
+def check_avoid(data: AvoidInput) -> AvoidCheck:
+    rules = "\n\n    ".join(FEATURE_RULES[feature] for feature in data.features)
+    candidate_text = render_candidate(data.candidate)
+
+    instructions = f"""You check whether ONE board game has features that the players want to avoid.
+    Read only the game's description below. Do not use what you know about the game from elsewhere.
+
+    Judge what the description shows actually happens when people play. Do not go by isolated words, creature
+    names, titles or themes. A feature also counts if it appears in an optional variant or in one scenario in the box.
+    When the description contradicts itself, the more detailed rule wins.
+
+    Definitions:
+
+    {rules}
+
+    For each feature, in this order: {data.features}
+    1. First look for one sentence in the description that shows the feature happening in play under the
+       definition above. Copy it word for word into "quotes". Python checks that it is in the description.
+       If there is no such sentence, write "".
+    2. Then answer "YES" in "has_feature" only if you copied a sentence that clearly counts under the definition.
+       Otherwise answer "NO". When the sentence matches a "Does NOT count" case, answer "NO".
+
+    Return only a JSON object, with one entry per feature in the same order, and no Markdown:
+    {{"quotes": ["..."], "has_feature": ["YES" or "NO"]}}
+
+    GAME:
+    {candidate_text}
+    """
+    return call_json(instructions, AvoidCheck, max_tokens=400)
+
+
+def complexity_check(level, card, wording):
+    """Apply the rubric's complexity rules. The model only reads the description's wording."""
+    if level is None:
+        return "PASS"
+    weight = card.complexity.weight if card.complexity else None
+    types = set(card.types)
+
+    # Each clue is True (yes), False (no) or None (no clue). Collect them separately.
+    light_yes = wording == "easy"
+    light_no = wording == "complex"
+    heavy_yes = wording == "complex"
+    heavy_no = wording == "easy"
+
+    # Without a weight, only the description's wording can decide.
+    if weight is not None:
+        if "children's" in types or "party" in types:
+            light_yes = True
+        if "family" in types and weight < 2.0:
+            light_yes = True
+        if types and types <= {"strategy", "thematic", "war", "abstract"} and weight >= 2.5:
+            light_no = True
+        if types & {"strategy", "war"} and "family" not in types and weight >= 3.5:
+            heavy_yes = True
+        if types & {"children's", "party", "family"}:
+            heavy_no = True
+
+    # The extremes win over every other clue.
+    if weight is not None and weight <= 1.3:
+        is_light, is_heavy = "YES", "NO"
+    elif weight is not None and weight >= 4.0:
+        is_light, is_heavy = "NO", "YES"
+    else:
+        is_light = "UNKNOWN" if light_yes == light_no else ("YES" if light_yes else "NO")
+        is_heavy = "UNKNOWN" if heavy_yes == heavy_no else ("YES" if heavy_yes else "NO")
+
+    if level == "light":
+        return {"YES": "PASS", "NO": "FAIL", "UNKNOWN": "UNKNOWN"}[is_light]
+    if level == "heavy":
+        return {"YES": "PASS", "NO": "FAIL", "UNKNOWN": "UNKNOWN"}[is_heavy]
+    # Medium: not light or heavy, and a weight between 2.0 and 3.5.
+    if is_light == "YES" or is_heavy == "YES":
+        return "FAIL"
+    if weight is not None and 2.0 <= weight <= 3.5:
+        return "PASS"
+    return "UNKNOWN"
+
+
+def avoid_feature(item):
+    """Map an avoid requirement to one of the rubric's five features, or None."""
+    text = item.lower()
+    if "elimin" in text or "knock" in text or "sitting out" in text:
+        return "player elimination"
+    if "horror" in text or "scary" in text or "creepy" in text:
+        return "horror"
+    if "timer" in text or "clock" in text or "real-time" in text:
+        return "timer"
+    if "violen" in text:
+        return "violence"
+    if "fight" in text or "combat" in text:
+        return "fighting"
+    return None
+
+
+def has_tag(feature, card):
+    """A tag always counts (RUBRIC.md section 3, Things to avoid)."""
+    fighting = "Fighting" in card.categories
+    if feature == "fighting":
+        return fighting
+    if feature == "violence":
+        return fighting or "Wargame" in card.categories
+    if feature == "horror":
+        return "Horror" in card.categories or "Zombies" in card.categories
+    if feature == "timer":
+        return "Real-time" in card.categories or "Real-Time" in card.mechanics
+    if feature == "player elimination":
+        return "Player Elimination" in card.mechanics
+    return False
+
+
+def normalize(text):
+    return " ".join(text.lower().replace("’", "'").replace("“", '"').replace("”", '"').split())
+
+
+def avoid_check(item, status, quote, candidate):
+    feature = avoid_feature(item)
+    if feature is None:
+        return status  # Not one of the rubric's features: keep the model's check.
+    if has_tag(feature, candidate.card):
+        return "FAIL"
+    # The description can add the feature, but only with a sentence that really is in the description.
+    quote = normalize(quote)
+    if status != "PASS" and quote and quote in normalize(candidate.description):
+        return "FAIL"
+    return "PASS"
+
+
 def answer(request: Request) -> Answer:
     # 1. MODEL CALL: extract requirements.
     requirements = extract_requirements(request)
@@ -230,6 +433,10 @@ def answer(request: Request) -> Answer:
         decision_input = DecisionInput(requirements=requirements, candidate=candidate)
         evaluations.append(decide(decision_input))
 
+    # The rest of the 10 calls go to check_avoid, at most one per candidate that passes everything else.
+    avoid_calls_left = 10 - 1 - len(request.candidates)
+    features = [avoid_feature(item) for item in requirements.avoid]
+
     # 3. Python selects the first candidate whose checks all pass.
     for index in range(len(request.candidates)):
         candidate = request.candidates[index]
@@ -238,8 +445,6 @@ def answer(request: Request) -> Answer:
 
         # Missing checks must not accidentally count as a pass.
         if len(evaluation.have) != len(requirements.have):
-            continue
-        if len(evaluation.avoid) != len(requirements.avoid):
             continue
 
         # If the card provides numbers, check them directly.
@@ -279,6 +484,22 @@ def answer(request: Request) -> Answer:
         if requirements.mode == "competitive" and cooperative:
             mode_check = "FAIL"
 
+        complexity = complexity_check(requirements.complexity, card, evaluation.rules_wording)
+
+        # Avoid items: a card tag always counts. Items that aren't one of the rubric's five features keep
+        # decide's check. The description of the rubric features is checked by check_avoid below.
+        statuses = evaluation.avoid + ["UNKNOWN"] * len(requirements.avoid)
+        quotes = evaluation.avoid_quotes + [""] * len(requirements.avoid)
+        avoid_checks = []
+        to_check = []
+        for i in range(len(requirements.avoid)):
+            if features[i] is None:
+                avoid_checks.append(avoid_check(requirements.avoid[i], statuses[i], quotes[i], candidate))
+            elif has_tag(features[i], card):
+                avoid_checks.append("FAIL")
+            elif features[i] not in to_check:
+                to_check.append(features[i])
+
         acceptable = True
         if players_check != "PASS":
             acceptable = False
@@ -288,12 +509,34 @@ def answer(request: Request) -> Answer:
             acceptable = False
         if mode_check != "PASS":
             acceptable = False
+        if complexity != "PASS":
+            acceptable = False
         for check in evaluation.have:
             if check != "PASS":
                 acceptable = False
-        for check in evaluation.avoid:
+        for check in avoid_checks:
             if check != "PASS":
                 acceptable = False
+
+        # Only a candidate that passes everything else is worth a check_avoid call.
+        if acceptable and to_check:
+            if avoid_calls_left > 0:
+                avoid_calls_left -= 1
+                result = check_avoid(AvoidInput(features=to_check, candidate=candidate))
+                result_quotes = result.quotes + [""] * len(to_check)
+                description = normalize(candidate.description)
+                for i in range(len(to_check)):
+                    has_feature = i < len(result.has_feature) and result.has_feature[i] == "YES"
+                    # A YES only counts with a sentence that really is in the description.
+                    quote = normalize(result_quotes[i])
+                    if has_feature and quote and quote in description:
+                        acceptable = False
+            else:
+                # No calls left: fall back to decide's checks of the description.
+                for i in range(len(requirements.avoid)):
+                    if features[i] in to_check:
+                        if avoid_check(requirements.avoid[i], statuses[i], quotes[i], candidate) != "PASS":
+                            acceptable = False
 
         if acceptable:
             # Use the final checks, not a model explanation Python may have corrected.
@@ -306,6 +549,8 @@ def answer(request: Request) -> Answer:
                 explanation += f" Its listed minimum age is {card.age}."
             if requirements.mode is not None:
                 explanation += f" It is {requirements.mode} according to its mechanics."
+            if requirements.complexity is not None:
+                explanation += f" It fits the {requirements.complexity} complexity rules."
             return Answer(pick=candidate.id, explanation=explanation)
 
     return Answer(pick=None, explanation="No candidate could be confirmed to meet every requirement.")
