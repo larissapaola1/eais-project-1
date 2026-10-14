@@ -1,0 +1,29 @@
+{
+  "system": "systems/compound.py",
+  "starter_version": "2026-10-05.2",
+  "backend": "course",
+  "model": null,
+  "variant": "compound",
+  "max_calls": 10,
+  "requests_file": "data/practice.jsonl",
+  "requests": 10,
+  "errors": 10,
+  "declined": 0,
+  "model_calls": {
+    "total": 9,
+    "max_per_request": 3
+  },
+  "cost_usd": 0.0025,
+  "seconds": 174.1,
+  "overrides": [],
+  "steps": {
+    "decide": {
+      "input": "DecisionInput",
+      "output": "GameEvaluation"
+    },
+    "extract_requirements": {
+      "input": "Request",
+      "output": "Requirements"
+    }
+  }
+}

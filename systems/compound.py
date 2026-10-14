@@ -81,9 +81,29 @@ def quote_exists(text: str, quote: str) -> bool:
     return bool(wording.strip()) and wording in " ".join(text.split()).casefold()
 
 
-def verified_clue(candidate: Candidate, claimed: bool, quotes: list[str]) -> bool:
-    # Keep a valid short quote even if another supplied quote is malformed.
-    return claimed and any(quote_exists(candidate.description, quote) for quote in quotes)
+def verified_clue(candidate: Candidate, claimed: bool, quotes: list[str], wording: str = "") -> bool:
+    # Keep a valid short quote even if another supplied quote is malformed. With `wording`, the quote must also
+    # say something about how hard the rules are, not just exist in the description.
+    return claimed and any(quote_exists(candidate.description, quote)
+                           and (not wording or re.search(wording, quote, re.IGNORECASE))
+                           for quote in quotes)
+
+
+# Rubric: "the description says the rules are easy or simple", or a comparison or genre label ("lighter than").
+# "Easy to <x>" counts only when x is about learning or playing, so "easy to escape" (winning) doesn't.
+EASY_WORDING = (r"\b(simple|simpler|simply|straightforward|light|lighter)\b"
+                r"|\b(easy|easier)\b(?! to (?!(learn|teach|play|understand|pick up|explain|get into)\b))")
+# Rubric: "the description says the rules are complex or for experienced players".
+COMPLEX_WORDING = r"\b(complex\w*|complicated|heavy|heavier|experienced|expert players|hardcore)\b"
+
+
+def check_age(requirements: Requirements, candidate: Candidate, model_check: str) -> str:
+    """Rubric: the card's minimum age must be at or below the youngest player's age."""
+    if requirements.min_age is None:
+        return "PASS"  # No age requirement in the request.
+    if candidate.card.age is not None:
+        return "PASS" if candidate.card.age <= requirements.min_age else "FAIL"
+    return model_check  # Only the description can tell.
 
 
 def explicit_requirement(text: str, quote: str) -> bool:
@@ -306,11 +326,17 @@ def decide(data: DecisionInput) -> GameEvaluation:
       the quote need not contain an introductory sentence or the entire paragraph.
       Use [] when false. Check relevance as well as existence. Python derives the
       linked light/heavy implications from each fact, so you only report it once.
+      The quote itself must say the rules or the game are easy, simple or light (or complex,
+      or for experienced players). The word "easy" about something else does not count:
+      "easy to escape alive" is about winning, and "the easiest orders" is one part of the game.
+      A genre such as "bluffing game" says nothing about the rules.
     - Age: min_age in the requirements is the youngest PLAYER'S age, not a
       requested minimum rating for the game. PASS when game_minimum_age <=
       youngest_player_age, including equality. FAIL only when the game's minimum
       age is greater than the player's age. A lower game age rating does not fail
-      an older player. Use PASS if the player's age is unspecified.
+      an older player. Use PASS if the player's age is unspecified (min_age is None):
+      an unknown player age is never a reason to FAIL. Use UNKNOWN only when a player
+      age is given and neither the card nor the description gives the game's minimum age.
 	- Cooperative vs Competitive: A game whose mechanics include "Cooperative Game" is cooperative, and a game without it is competitive.
 
     Missing information:
@@ -401,8 +427,10 @@ def decide(data: DecisionInput) -> GameEvaluation:
     evaluation = call_json(prompt, GameEvaluation, max_tokens=1000)
     # Human label overrides skip this body and use the human's clues directly.
     updates = {
-        "easy_rules": verified_clue(data.candidate, evaluation.easy_rules, evaluation.easy_quotes),
-        "complex_rules": verified_clue(data.candidate, evaluation.complex_rules, evaluation.complex_quotes),
+        "easy_rules": verified_clue(data.candidate, evaluation.easy_rules, evaluation.easy_quotes, EASY_WORDING),
+        "complex_rules": verified_clue(data.candidate, evaluation.complex_rules, evaluation.complex_quotes,
+                                       COMPLEX_WORDING),
+        "min_age": check_age(data.requirements, data.candidate, evaluation.min_age),
     }
     if not data.candidate.card.players and not quote_exists(data.candidate.description, evaluation.players_quote):
         updates.update(min_players=None, max_players=None)
