@@ -94,7 +94,7 @@ def verified_clue(candidate: Candidate, claimed: bool, quotes: list[str], wordin
 EASY_WORDING = (r"\b(simple|simpler|simply|straightforward|light|lighter)\b"
                 r"|\b(easy|easier)\b(?! to (?!(learn|teach|play|understand|pick up|explain|get into)\b))")
 # Rubric: "the description says the rules are complex or for experienced players".
-COMPLEX_WORDING = r"\b(complex\w*|complicated|heavy|heavier|experienced|expert players|hardcore)\b"
+COMPLEX_WORDING = r"\b(complex\w*|complicated|heavy|heavier|experienced|experts?|hardcore)\b"
 
 
 def check_age(requirements: Requirements, candidate: Candidate, model_check: str) -> str:
