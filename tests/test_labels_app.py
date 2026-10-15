@@ -107,6 +107,8 @@ def as_javascript(value):
 class FakeApp:
     def __init__(self):
         self.items, self.labels, self.schemas = [], {}, {}  # labels: (step, id, input key) -> value
+        self.declared = []  # each upload's declared steps
+        self.stale = None  # the requests whose later-step inputs are out of date, as the app reports them
 
     def handler(app):
         class H(http.server.BaseHTTPRequestHandler):
@@ -123,12 +125,16 @@ class FakeApp:
                 rows = [{"step": s, "id": rid, "call": 0, "input": as_javascript(json.loads(k)), "label": v, "current": True,
                          "saved_by": "Ana"}
                         for (s, rid, k), v in app.labels.items()]
-                self._send(200, {"steps": {s: app.schemas[s] for s, _, _ in app.labels}, "labels": rows})
+                body = {"steps": {s: app.schemas[s] for s, _, _ in app.labels}, "labels": rows}
+                if app.stale is not None:
+                    body["stale"] = app.stale
+                self._send(200, body)
 
             def do_POST(self):
                 body = json.loads(self.rfile.read(int(self.headers["content-length"])))
                 app.schemas.update(body["steps"])
                 app.items.append(body["items"])
+                app.declared.append(body.get("declared"))
                 self._send(200, {"sent": len(body["items"]), "added": len(body["items"]), "steps": {}})
 
             def log_message(self, *a):
@@ -174,6 +180,9 @@ def test_send_waits_for_labels_on_an_earlier_step_then_sends_the_real_inputs(fak
     said = []
     assert labels.send(system, str(REQUESTS), limit=2, out=said.append) == {"sent": 2, "added": 2, "waiting": 4}
     assert [i["step"] for i in fake_app.items[0]] == ["read_request", "read_request"]
+    # This toy system's steps were declared when this test file was imported, before `send` loaded the system, so the
+    # list of declared steps is incomplete: the upload leaves it out, and the Labels tab lists every step.
+    assert fake_app.declared[0] is None
     assert said[1] == ('We didn\'t send the inputs of 4 calls to your "check" step yet, because they may depend on the '
                        'outputs of your "read_request" step, and you haven\'t labeled those yet. Label your "read_request" '
                        "step, then run this command again.")
@@ -192,6 +201,45 @@ def test_send_waits_for_labels_on_an_earlier_step_then_sends_the_real_inputs(fak
                               'your "check" step.')
     # The check inputs carry the labeled requirements, not a stand-in.
     assert json.loads(checks[0]["input"])["needs"] == {"players": 4, "mood": "light", "wish": None}
+
+
+DECLARING = """
+from p1 import Answer, Request, call_json, step
+from tests.test_labels_app import Check, Fit, Needs
+
+VARIANT = "compound"
+
+
+@step
+def shortlist(request: Request) -> Request:  # a code step: no model call
+    return request
+
+
+@step
+def read_request(request: Request) -> Needs:
+    return call_json(f"read {request.request}", Needs)
+
+
+@step
+def check(c: Check) -> Fit:
+    return call_json(f"check {c.game}", Fit)
+
+
+def answer(request: Request) -> Answer:
+    needs = read_request(shortlist(request))
+    fits = [check(Check(needs=needs, game=c.id)) for c in request.candidates[:2]]
+    return Answer(pick=request.candidates[0].id if any(f.fits == "yes" for f in fits) else None, explanation="toy")
+"""
+
+
+def test_send_names_every_step_the_system_declares(fake_app, tmp_path):
+    system = tmp_path / "declaring.py"
+    system.write_text(DECLARING)
+    assert labels.send(str(system), str(REQUESTS), limit=1, out=lambda *_: None)["waiting"] == 2
+    # Only read_request had inputs to send. The upload also names check, which waits for read_request's labels, and
+    # the code step, so the Labels tab keeps listing check and drops only steps that are no longer in the code.
+    assert {i["step"] for i in fake_app.items[0]} == {"read_request"}
+    assert fake_app.declared == [["check", "read_request", "shortlist"]]
 
 
 def test_pull_writes_whole_outputs_and_the_fields_to_compare(fake_app, tmp_path, monkeypatch):
@@ -234,6 +282,14 @@ def test_pulled_labels_work_for_the_swap_in_and_for_step_accuracy(fake_app, tmp_
                             "output": {"fits": "unsure", "reason": ""}, "checked": ["fits"]}) + "\n")
     acc = labels.accuracy(str(out), "screen", str(tmp_path / "labels" / "screen.jsonl"))
     assert acc["labeled_calls"] == 10 and acc["labels_not_in_run"] == 1 and acc["fields"]["fits"]["of"] == 10
+    # A label for a request in the run, whose input no call had (e.g. an earlier step's label changed after `send`), is
+    # left out and named, not counted as wrong with "the step returned null".
+    with open(tmp_path / "labels" / "screen.jsonl", "a") as f:
+        f.write(json.dumps({"step": "screen", "id": reqs[0].id, "call": 5, "input": {"request": "old", "game": "A"},
+                            "output": {"fits": "yes", "reason": ""}, "checked": ["fits"]}) + "\n")
+    acc = labels.accuracy(str(out), "screen", str(tmp_path / "labels" / "screen.jsonl"))
+    assert acc["labeled_calls"] == 10 and acc["labels_without_call"] == [reqs[0].id] and acc["fields"]["fits"]["of"] == 10
+    assert acc["all_fields_right"] == 0 and not any(m["output"] is None for m in acc["misses"])
 
 
 def test_stand_in_fits_the_output_type():
@@ -311,3 +367,45 @@ def test_pulled_labels_match_inputs_with_whole_number_weights(fake_app, tmp_path
     swap = run.load_overrides(tmp_path / "labels" / "weigh.jsonl")
     answer, _ = run.run_one(per_weight, request, {"weigh": swap[request.id]})
     assert answer["pick"] == "C"
+
+
+def test_accuracy_prints_a_count_and_names_the_labels_it_left_out(fake_app, tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("P1_BACKEND", "fake")
+    monkeypatch.setattr(llm, "_complete", REAL_COMPLETE)  # this test makes (fake) model calls on purpose
+    monkeypatch.setattr(llm, "fake_responder", lambda prompt, system: '{"fits": "yes", "reason": "r"}')
+    reqs = [Request.model_validate(r) for r in list(read_jsonl(REQUESTS))[:2]]
+    out = tmp_path / "run"
+    out.mkdir()
+    from p1.io import write_jsonl
+    write_jsonl(out / "traces.jsonl", (run.run_one(per_game, r, {})[1] for r in reqs))
+    rows = [{"step": "screen", "id": r.id, "call": 0, "input": {"request": r.request, "game": "A"},
+             "output": {"fits": "yes", "reason": ""}, "checked": ["fits"]} for r in reqs]
+    rows.append({"step": "screen", "id": reqs[1].id, "call": 9, "input": {"request": "old", "game": "A"},
+                 "output": {"fits": "no", "reason": ""}, "checked": ["fits"]})
+    write_jsonl(tmp_path / "screen.jsonl", rows)
+    labels.main(["accuracy", str(out), "--step", "screen", "--labels", str(tmp_path / "screen.jsonl")])
+    said = capsys.readouterr().out.splitlines()
+    assert said[0] == 'Your "screen" step: we compared 2 calls with your labels. In 2 of them, every labeled field is right.'
+    assert said[1].startswith(f'We left out 1 label ({reqs[1].id}), because no call of your "screen" step in this run had '
+                              'the input you labeled.')
+    assert not any("Wrong:" in line for line in said)
+
+
+def test_pull_lists_the_requests_to_send_again(fake_app, tmp_path):
+    fake_app.schemas["read_request"] = Needs.model_json_schema()
+    fake_app.labels[("read_request", "L04", trace.input_key({"request": "x"}))] = {"players": 2, "mood": "light"}
+    fake_app.stale = [{"id": i, "steps": ["read_request"]} for i in ("L04", "L07", "L08", "P007", "P001")]
+    said = []
+    labels.pull(str(tmp_path / "labels"), out=said.append)
+    assert said[1:] == [
+        "You saved labels of an earlier step after your last `send`, for L04, L07, L08, P007 and P001. Run `send` again "
+        "for those requests, and we'll build your later steps' inputs from your current labels. Then label the new "
+        "inputs on the Labels tab, and run `python -m p1.labels pull` again:",
+        "    python -m p1.labels send systems/compound.py --requests data/labeling.jsonl",
+        "    python -m p1.labels send systems/compound.py --requests data/practice.jsonl",
+        "    python -m p1.labels send systems/compound.py --requests data/public.jsonl",
+    ]
+    fake_app.stale = []
+    said = []
+    labels.pull(str(tmp_path / "labels"), out=said.append)
+    assert len(said) == 1  # nothing to send again: only the saved-labels line

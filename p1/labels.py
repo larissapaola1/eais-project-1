@@ -24,7 +24,8 @@ with a normal run on the same requests:
         --override my_step=labels/my_step.jsonl --out runs/swap-my_step
 
 Each label belongs to one exact input of the step, so a later change to an earlier step only leaves some calls
-unlabeled.
+unlabeled. If you change an earlier step's label after you send, run `send` again for those requests, and label the
+later steps' new inputs. When you run `pull`, we list the requests where you need to.
 """
 from __future__ import annotations
 
@@ -106,6 +107,7 @@ def accuracy(run_dir: str, step: str, labels: str, fields: list[str] | None = No
     whole = [0, 0]
     misses = []
     not_in_run = 0
+    no_call: list[str] = []
     seen: dict[str, int] = defaultdict(int)
     for row in read_jsonl(labels):
         rid, label = row["id"], row["output"]
@@ -117,9 +119,13 @@ def accuracy(run_dir: str, step: str, labels: str, fields: list[str] | None = No
         recs = [r for r in got.get(rid, []) if not r.get("overridden")]
         if "input" in row:  # a label belongs to one input: compare with the call that had it
             key = input_key(row["input"])
-            actual = next((r.get("output") for r in recs if input_key(r.get("input")) == key), None)
+            match = [r for r in recs if input_key(r.get("input")) == key]
         else:
-            actual = recs[i].get("output") if i < len(recs) else None
+            match = recs[i:i + 1]
+        if not match:  # no call in this run to compare with: leave the label out, and say so
+            no_call.append(rid)
+            continue
+        actual = match[0].get("output")
         keys = fields or row.get("checked") or list(label)
         ok_all = True
         for k in keys:
@@ -132,8 +138,8 @@ def accuracy(run_dir: str, step: str, labels: str, fields: list[str] | None = No
                 misses.append({"id": rid, "call": i, "field": k, "label": _get(label, k), "output": a})
         whole[0] += ok_all
         whole[1] += 1
-    return {"step": step, "labeled_calls": whole[1], "labels_not_in_run": not_in_run,
-            "all_fields_match": round(whole[0] / whole[1], 3) if whole[1] else None,
+    return {"step": step, "labeled_calls": whole[1], "labels_not_in_run": not_in_run, "labels_without_call": no_call,
+            "all_fields_right": whole[0], "all_fields_match": round(whole[0] / whole[1], 3) if whole[1] else None,
             "fields": {k: {"match": m, "of": c, "accuracy": round(m / c, 3)} for k, (m, c) in per_field.items()},
             "misses": misses}
 
@@ -143,7 +149,7 @@ def send(system_spec: str, requests_path: str, limit: int | None = None, out=pri
     import copy
     from collections import Counter
 
-    from . import app, llm, run, trace
+    from . import app, llm, run, steps, trace
     from .types import Request
 
     system = run.load_system(system_spec)
@@ -182,9 +188,13 @@ def send(system_spec: str, requests_path: str, limit: int | None = None, out=pri
             "call must be inside a function marked with @step.")
         return {"sent": 0}
     schemas = {name: output_types[name].model_json_schema() for name in sorted({i["step"] for i in items})}
+    # Every step your system declares, so that the Labels tab lists only the steps in your code now. If some step
+    # that sent inputs isn't among them, the list is incomplete, so we leave it out and the tab lists every step.
+    declared = sorted(steps.REGISTRY)
+    named = {"declared": declared} if set(schemas) <= set(declared) else {}
     added = 0
     for start in range(0, len(items), 2000):
-        added += app.post("/label-items", {"steps": schemas, "items": items[start:start + 2000]})["added"]
+        added += app.post("/label-items", {"steps": schemas, "items": items[start:start + 2000], **named})["added"]
     by_step = Counter(i["step"] for i in items)
     labeled = sum(1 for i in items if trace.input_key(json.loads(i["input"])) in overrides.get(i["request_id"], {}).get(i["step"], {}))
     parts = [f'{v} for your "{k}" step' for k, v in by_step.items()]  # in the order the steps first ran
@@ -240,7 +250,31 @@ def pull(out_dir: str = "labels", out=print) -> dict:
         out(said)
     if not by_step:
         out("Your team has no labels yet. Send inputs with `python -m p1.labels send`, then label them in the course app.")
+    stale = [s["id"] for s in pulled.get("stale") or []]
+    if stale:
+        out(f"You saved labels of an earlier step after your last `send`, for {_and(stale)}. Run `send` again for those "
+            "requests, and we'll build your later steps' inputs from your current labels. Then label the new inputs on "
+            "the Labels tab, and run `python -m p1.labels pull` again:")
+        for file in _requests_files(stale):
+            out(f"    python -m p1.labels send systems/compound.py --requests {file}")
     return {step_name: len(rows) for step_name, rows in by_step.items()}
+
+
+PRACTICE = {"P007", "P014", "P019", "P031", "P090", "P092", "P101", "P102", "P129", "P134"}
+
+
+def _requests_files(ids) -> list:
+    """The data files that hold these requests: the labeling requests, the practice requests, or the public ones."""
+    return sorted({"data/labeling.jsonl" if i.startswith("L") else "data/practice.jsonl" if i in PRACTICE
+                   else "data/public.jsonl" for i in ids})
+
+
+def _and(ids) -> str:
+    """ "L04", "L04 and L07", "L04, L07 and L08", or the first 5 and "and 3 more"."""
+    ids = list(ids)
+    if len(ids) > 5:
+        return ", ".join(ids[:5]) + f" and {len(ids) - 5} more"
+    return ids[0] if len(ids) == 1 else ", ".join(ids[:-1]) + " and " + ids[-1]
 
 
 def main(argv=None) -> None:
@@ -279,8 +313,14 @@ def main(argv=None) -> None:
     if args.json:
         print(json.dumps(r, indent=2))
         return
-    print(f'Your "{r["step"]}" step: we compared {r["labeled_calls"]} calls with your labels. In {r["all_fields_match"]} '
+    print(f'Your "{r["step"]}" step: we compared {r["labeled_calls"]} calls with your labels. In {r["all_fields_right"]} '
           f'of them, every labeled field is right.')
+    if r["labels_without_call"]:
+        ids = r["labels_without_call"]
+        print(f'We left out {len(ids)} label{"" if len(ids) == 1 else "s"} ({_and(ids)}), because no call of your '
+              f'"{r["step"]}" step in this run had the input you labeled. Either an earlier step\'s output in this run '
+              'differs from its label, or you changed an earlier step\'s label after your last `send`. In the second '
+              'case, run `send` again and label the new inputs. When you run `python -m p1.labels pull`, we list the requests.')
     if r["labels_not_in_run"]:
         print(f"We left out {r['labels_not_in_run']} labels for requests that weren't in this run.")
     for k, f in r["fields"].items():
