@@ -17,12 +17,19 @@ an answer is wrong, we can trace which step went wrong first, and fix that step.
 
 | | Single-call | Compound |
 |---|---|---|
-| **Official checkpoint** (50 held-out requests, course app) | 34/50 | 44/50 (checkpoint version) |
-| **Public, checkpoint version** (150 requests, 2 runs; v4 + crash fix, commit `ed925a4`) | 93/150, 97/150 (unchanged since) | **132/150, 133/150** |
-| **Public, final versions** (150 requests, 2 runs) | 93/150, 97/150 | **140/150, 142/150** (v10, `systems/compound.py`) |
-| **Feedback, final versions** (50 unseen requests, course app, 2 runs) | 29/50, 28/50 | 46/50, 46/50 (v10) |
-| Cost and time per request, checkpoint version | $0.00027–$0.00042, 0.3 s (unchanged since) | $0.00176, 3.5 s |
-| Cost and time per request, final versions | $0.00027–$0.00042, 0.3 s | $0.00054–$0.00057, 1.05 s |
+| **Official checkpoint** (50 requests) | 34/50 | 44/50 |
+| **Public, checkpoint version** (150 requests) | 93/150, 97/150 | **132/150, 133/150** |
+| **Public, final version** (150 requests) | 93/150, 97/150 | **140/150, 142/150** |
+| **Feedback, final version** (50 unseen requests) | 29/50, 28/50 | 46/50, 46/50 |
+| Cost per request, checkpoint version | $0.00027–$0.00042 | $0.00176 |
+| Cost per request, final version | $0.00027–$0.00042 | $0.00054–$0.00057 |
+| Time per request, checkpoint version | 0.3 s | 3.5 s |
+| Time per request, final version | 0.3 s | 1.05 s |
+
+*Checkpoint version:* the compound system we submitted for the checkpoint (v4 plus a crash fix, commit
+`ed925a4`); the official score is the course app's run of it. *Final version:* v10, `systems/compound.py`. The
+single-call system hasn't changed since the checkpoint. Public scores come from 2 runs each, feedback scores from 2
+course-app runs.
 
 **Selected change: keep a correctly extracted mode** (cooperative or competitive). Mode dropped was the largest
 group of the checkpoint version's failures: the model extracted the mode correctly, but a Python check discarded
@@ -93,7 +100,9 @@ can't be scored with `score.py`, because their answers aren't public.
 | `systems/compound-v6.py` | v6: the same steps, but `decide` runs on all five games and there's no mode change. Kept to compare against and to measure step accuracy, since it evaluates every labeled input. |
 | `systems/compound-checkpoint.py` | The compound system exactly as submitted for the checkpoint (commit `ed925a4`), kept to measure against. |
 | `score.py` | Our scorer. |
-| `runs/` | The saved output of every run this README reports, plus other runs from development that it doesn't cite, named `<version>-<requests>-run<N>`: version `single`, `checkpoint` (commit `ed925a4`), `v5`, `v6`, `v7` (v6 with fewer calls, never committed on its own) or `v10` (final); requests `public`, `public10` (first 10), `checkpoint`, `practice` or `labeling`; `-swapextract` when our extraction labels replaced the model's. Every run used gpt-4o-mini-2024-07-18. `runs/old/` holds early drafts and runs the server outage broke, which we don't report. |
+| `runs/` | The saved output of our runs; see the note below. |
+
+**Run folders.** The saved output of every run this README reports, plus other runs from development that it doesn't cite, named `<version>-<requests>-run<N>`: version `single`, `checkpoint` (commit `ed925a4`), `v5`, `v6`, `v7` (v6 with fewer calls, never committed on its own) or `v10` (final); requests `public`, `public10` (first 10), `checkpoint`, `practice` or `labeling`; `-swapextract` when our extraction labels replaced the model's. Every run used gpt-4o-mini-2024-07-18. `runs/old/` holds early drafts and runs the server outage broke, which we don't report.
 
 ## Our systems
 
@@ -101,10 +110,11 @@ can't be scored with `score.py`, because their answers aren't public.
 against the rubric and to pick an accepted game or decline.
 
 ```mermaid
+%%{init: {"flowchart": {"htmlLabels": false}}}%%
 flowchart LR
-    R["Request + 5 games<br/>(card + description each)"] --> P["One prompt:<br/>rubric rules + request + 5 games"]
-    P --> M(["Model call<br/>(the only one)"])
-    M --> A["Pick a letter,<br/>or decline"]
+    R["Request + 5 games"] --> P["One prompt with the rubric"]
+    P --> M(["One model call"])
+    M --> A["Pick or decline"]
 ```
 
 **Compound** (`systems/compound.py`). Two model steps, then plain Python for every rubric rule that can be
@@ -126,14 +136,16 @@ checked from data:
    acceptable game.
 
 ```mermaid
+%%{init: {"flowchart": {"htmlLabels": false}}}%%
 flowchart LR
-    A["Request + 5 games"] --> B(["1. Model: extract<br/>the requirements"])
-    B --> C(["2. Model: read each<br/>game's description"])
-    C --> D["3. Python: check each<br/>game against the rubric"]
-    D --> E["Pick the first game<br/>that passes, or decline"]
+    A["Request + 5 games"] --> B(["1. Extract requirements"])
+    B --> C(["2. Read each game"])
+    C --> D["3. Check the rubric"]
+    D --> E["Pick the first that passes"]
 ```
 
-Several games can pass the checks; the system picks the first one, in order A to E.
+Steps 1 and 2 are model calls (rounded boxes); step 3 is plain Python. Several games can pass the checks; the
+system picks the first one, in order A to E, and declines if none passes.
 
 A reply that doesn't fit its type is retried once, within the limit of 10 calls per request, and a game still
 without a valid reply is never picked, so every request gets an answer. We added this after a reply with 0 players
@@ -183,9 +195,11 @@ scores.
 
 | Submission | Version | Single-call | Compound |
 |---|---|---|---|
-| Wed 14 Oct, 18:45 | v6 | 29/50 (58%) | 46/50 (92%) |
-| Thu 15 Oct, 17:56 | v10, final (commit `34afa19`) | 29/50 (58%) | 46/50 (92%) |
-| Fri 16 Oct, 00:08 | v10, same code (commit `963bb37`, README changes only) | 28/50 (56%) | 46/50 (92%) |
+| Wed 14 Oct, 18:45 | v6 | 29/50 | 46/50 |
+| Thu 15 Oct, 17:56 | v10 | 29/50 | 46/50 |
+| Fri 16 Oct, 00:08 | v10 | 28/50 | 46/50 |
+
+Both v10 submissions run the same code (commits `34afa19` and `963bb37`; the second changed only the README).
 
 The single-call system never changed, and its score still moved between 28 and 29: the same run-to-run variation
 as on the public requests.
@@ -203,10 +217,14 @@ Step accuracy on the 10 hidden labeling requests, measured with v6. The final ve
 `decide` prompt and checks are identical, and its extraction differs only in keeping a mode more often, a field v6
 already got right on all 10.
 
-| Step | Run | Every labeled field right | Per field |
-|---|---|---|---|
-| `extract_requirements` | `runs/v6-labeling-run1` (normal run) | 9 of 10 | players, time, age, mode, avoid 10/10; complexity 9/10 |
-| `decide` | `runs/v6-labeling-swapextract-run1` (our extraction labels swapped in) | 43 of 50 (0.86) | players 0.98–1.0, time 1.0, age 1.0, easy rules 0.96, complex rules 0.98, avoid 0.94 |
+| Step | All&nbsp;correct | Per field |
+|---|---|---|
+| `extract_requirements` | 9/10 | complexity 9/10, all others 10/10 |
+| `decide` | 43/50 | easy rules 0.96, complex rules 0.98, avoid 0.94, all others 0.98 or more |
+
+*All correct* counts the calls in which every labeled field matches our label. Runs: `runs/v6-labeling-run1`
+(normal run) for `extract_requirements`, and `runs/v6-labeling-swapextract-run1` (our extraction labels swapped
+in) for `decide`.
 
 We measure `decide` with our extraction labels swapped in (`--override extract_requirements=...`), so that its
 inputs match the labeled ones; in a normal run, free-text fields such as quotes and wishes make them differ.
@@ -319,10 +337,15 @@ from 137 to 143, 139 to 144, 45 to 47 and 46 to 48, and no right answer became w
 
 | | v7, before the change | v10, after the change |
 |---|---|---|
-| Public, 2 runs | 138, 136 (`runs/v7-public-run1`, `runs/v7-public-run2`) | 140, 142 (`runs/v10-public-run1`, `runs/v10-public-run2`) |
-| Checkpoint | 45 (`runs/v7-checkpoint-run1`) | 46, 46 (`runs/v10-checkpoint-run1`, `runs/v10-checkpoint-run2`) |
-| Feedback (50 unseen requests) | 46 (v6, the closest submitted version: v7 was never submitted, and v6 makes the same decisions as v7) | 46, 46 |
-| Cost and time per request | $0.00056, 1.05 s | $0.00055, 1.05 s |
+| Public (150), 2 runs | 138, 136 | 140, 142 |
+| Checkpoint (50) | 45 | 46, 46 |
+| Feedback (50 unseen) | 46 (v6) | 46, 46 |
+| Cost per request | $0.00056 | $0.00055 |
+| Time per request | 1.05 s | 1.05 s |
+
+Runs: v7 in `runs/v7-public-run1`, `runs/v7-public-run2` and `runs/v7-checkpoint-run1`; v10 in
+`runs/v10-public-run1`, `runs/v10-public-run2`, `runs/v10-checkpoint-run1` and `runs/v10-checkpoint-run2`. For
+feedback, v6 stands in for v7, which was never submitted; v6 makes the same decisions as v7.
 
 **Compared with the prediction, request by request:**
 
@@ -373,7 +396,7 @@ only 25 of 50 `easy_rules`, 46 of 50 `complex_rules` and 28 of 50 `min_age` valu
 *Why.* In the checkpoint version, `decide` had to back each clue with a quote, and Python accepted the clue if the
 quote existed anywhere in the description. Real quotes about something other than the rules got through:
 
-| Request | Game | Clue | Quote the model gave | Why it's wrong under the rubric |
+| Request | Game | Clue | Model's&nbsp;quote | Why&nbsp;it's&nbsp;wrong |
 |---|---|---|---|---|
 | L01 | Shy Monsters | easy | "asymmetric bluffing game" | A genre says nothing about the rules |
 | L05 | Bohnanza: Das Würfelspiel | easy | "the easiest orders to complete" | One part of the game |
@@ -421,13 +444,19 @@ listed one. The fix makes the step's output right, so step accuracy and our labe
 We wrote no prediction before making this change: we found the problem in our step-accuracy check against our
 labels, before the checkpoint requests were released.
 
-| | Checkpoint version | After the change (v6, `compound-v6.py`) |
+| | Checkpoint version | v6, after the change |
 |---|---|---|
-| Public score, 2 runs each | 132, 133 | 137, 139 |
-| Checkpoint score | 45 | 45, 46 |
-| The 7 requests of the group (P059, P067, P076, P108, P146, H1-016, H1-088) | wrong in at least one run: 7 | wrong in any run: 0 |
-| `decide` against our labels (hidden labeling requests, recorded replies) | easy rules 25/50, complex rules 46/50, age 28/50 | easy rules 48/50, complex rules 49/50, age 50/50 |
-| Feedback score | not run (the checkpoint submission isn't in the course app's feedback list) | 46 |
+| Public (150), 2 runs | 132, 133 | 137, 139 |
+| Checkpoint (50) | 45 | 45, 46 |
+| Requests of the group wrong | 7 of 7 | 0 of 7 |
+| `decide`: easy rules | 25/50 | 48/50 |
+| `decide`: complex rules | 46/50 | 49/50 |
+| `decide`: age | 28/50 | 50/50 |
+| Feedback (50 unseen) | not run | 46 |
+
+The group's 7 requests are P059, P067, P076, P108, P146, H1-016 and H1-088, counted as wrong if wrong in any run.
+The `decide` rows compare with our labels on the hidden labeling requests. The checkpoint submission isn't in the
+course app's feedback list, so it has no feedback score.
 
 We keep the change: it fixed every request of its group in every run, and the public score rose by 5 to 6, more
 than the 1 to 2 that two runs of the same version differ by.
