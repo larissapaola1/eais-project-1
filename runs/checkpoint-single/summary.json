@@ -1,0 +1,20 @@
+{
+  "system": "systems/single.py",
+  "starter_version": "2026-10-05.2",
+  "backend": "course",
+  "model": null,
+  "variant": "single",
+  "max_calls": 1,
+  "requests_file": "data/checkpoint_requests.jsonl",
+  "requests": 50,
+  "errors": 50,
+  "declined": 0,
+  "model_calls": {
+    "total": 0,
+    "max_per_request": 0
+  },
+  "cost_usd": 0,
+  "seconds": 803.1,
+  "overrides": [],
+  "steps": {}
+}
