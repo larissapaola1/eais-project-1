@@ -106,10 +106,29 @@ def check_age(requirements: Requirements, candidate: Candidate, model_check: str
     return model_check  # Only the description can tell.
 
 
+OPTIONAL = r"would be nice|would be amazing|would love|we['’]d love|we love|not a must|not mandatory|not required|optional|bonus points|does(?: not|n't) have to"
+
+
 def explicit_requirement(text: str, quote: str) -> bool:
     """Live extraction must quote a mandatory clause, not an optional preference."""
-    optional = r"would be nice|would be amazing|would love|we['’]d love|we love|not a must|not mandatory|not required|optional|bonus points|does(?: not|n't) have to"
-    return quote_exists(text, quote) and re.search(optional, quote, re.IGNORECASE) is None
+    return quote_exists(text, quote) and re.search(OPTIONAL, quote, re.IGNORECASE) is None
+
+
+# Rubric: "together against the game", "team up against the game" and "as one team" mean cooperative;
+# "head to head" and "against each other" mean competitive.
+MODE_WORDING = {
+    "cooperative": r"against the game|as one team|team up|cooperative|co-?op\b",
+    "competitive": r"head[- ]to[- ]head|against each other|against one another|competitive|free[- ]for[- ]all",
+}
+
+
+def mode_in_request(text: str, mode: str) -> bool:
+    """The request itself says this mode, in a sentence that isn't a wish. The model's quote of that sentence is
+    often a paraphrase ("we want..." for "My husband and I want..."), so it can't be required word for word."""
+    for sentence in re.split(r"(?<=[.!?])\s+", text):
+        if re.search(MODE_WORDING[mode], sentence, re.IGNORECASE) and not re.search(OPTIONAL, sentence, re.IGNORECASE):
+            return True
+    return False
 
 
 def check_avoid(candidate: Candidate, avoided: str, model_check: str) -> str:
@@ -258,7 +277,8 @@ def extract_requirements(request: Request) -> Requirements:
     updates = {}
     if requirements.complexity is not None and not explicit_requirement(request_only, requirements.complexity_quote):
         updates["complexity"] = None
-    if requirements.mode is not None and not explicit_requirement(request_only, requirements.mode_quote):
+    if requirements.mode is not None and not explicit_requirement(request_only, requirements.mode_quote) \
+            and not mode_in_request(request_only, requirements.mode):
         updates["mode"] = None
     return requirements.model_copy(update=updates)
 
@@ -441,6 +461,121 @@ def decide(data: DecisionInput) -> GameEvaluation:
 
 
 
+def ruled_out_by_card(requirements: Requirements, candidate: Candidate) -> bool:
+    """True when the card alone already breaks a requirement, so no decide output could make the game acceptable.
+    Only checks that is_acceptable() decides from the card without the model's output."""
+    card = candidate.card
+    if requirements.players is not None and card.players:
+        if not card.players[0] <= requirements.players <= card.players[-1]:
+            return True
+    if requirements.max_minutes is not None and card.minutes:
+        if max(card.minutes) > requirements.max_minutes:
+            return True
+    if requirements.min_age is not None and card.age is not None and card.age > requirements.min_age:
+        return True
+    cooperative = "Cooperative Game" in card.mechanics
+    if requirements.mode == "cooperative" and not cooperative:
+        return True
+    if requirements.mode == "competitive" and cooperative:
+        return True
+    # A tag always counts, whatever the description says.
+    for avoided in requirements.avoid:
+        if check_avoid(candidate, avoided, "NO") == "FAIL":
+            return True
+    # Complexity: if no combination of description clues can make it pass, the clues don't matter.
+    if not any(check_complexity(candidate, requirements.complexity, easy, complex_) == "PASS"
+               for easy in (False, True) for complex_ in (False, True)):
+        return True
+    return False
+
+
+def is_acceptable(requirements: Requirements, candidate: Candidate, evaluation: GameEvaluation) -> bool:
+    """The rubric checks for one game, combining the card with decide's output."""
+    card = candidate.card
+
+    # Missing checks must not accidentally count as a pass.
+    if requirements.avoid and len(evaluation.avoid) != len(requirements.avoid):
+        return False
+
+    # If the card provides numbers, check them directly.
+    # Otherwise keep the model's check based on the description.
+    players_check = "PASS"
+    if requirements.players is not None:
+        player_range = card.players
+        if not player_range and evaluation.min_players is not None and evaluation.max_players is not None:
+            player_range = [evaluation.min_players, evaluation.max_players]
+        if not player_range or player_range[0] > player_range[-1]:
+            players_check = "UNKNOWN"
+        elif player_range[0] <= requirements.players <= player_range[-1]:
+            players_check = "PASS"
+        else:
+            players_check = "FAIL"
+
+    time_check = "PASS"
+    if requirements.max_minutes is not None:
+        game_max_minutes = max(card.minutes) if card.minutes else evaluation.max_minutes
+        if game_max_minutes is None:
+            time_check = "UNKNOWN"
+        elif game_max_minutes <= requirements.max_minutes:
+            time_check = "PASS"
+        else:
+            time_check = "FAIL"
+
+    age_check = evaluation.min_age
+    if requirements.min_age is None:
+        age_check = "PASS"
+    elif card.age is not None:
+        if card.age <= requirements.min_age:
+            age_check = "PASS"
+        else:
+            age_check = "FAIL"
+
+    # The rubric defines mode using this exact mechanic tag.
+    mode_check = "PASS"
+    cooperative = "Cooperative Game" in card.mechanics
+    if requirements.mode == "cooperative" and not cooperative:
+        mode_check = "FAIL"
+    if requirements.mode == "competitive" and cooperative:
+        mode_check = "FAIL"
+
+    acceptable = True
+    if players_check != "PASS":
+        acceptable = False
+    if time_check != "PASS":
+        acceptable = False
+    if age_check != "PASS":
+        acceptable = False
+    if mode_check != "PASS":
+        acceptable = False
+    complexity_check = check_complexity(
+        candidate, requirements.complexity,
+        evaluation.easy_rules, evaluation.complex_rules,
+    )
+    if complexity_check != "PASS":
+        acceptable = False
+    for avoided, model_check in zip(requirements.avoid, evaluation.avoid):
+        if check_avoid(candidate, avoided, model_check) != "PASS":
+            acceptable = False
+    return acceptable
+
+
+def explain(requirements: Requirements, candidate: Candidate) -> str:
+    # Use the final checks, not a model explanation Python may have corrected.
+    card = candidate.card
+    explanation = candidate.name + " passed every requested requirement check."
+    if requirements.players is not None and card.players:
+        explanation += f" Its player range is {card.players[0]} to {card.players[-1]}."
+    if requirements.max_minutes is not None and card.minutes:
+        explanation += f" Its maximum listed play time is {max(card.minutes)} minutes."
+    if requirements.min_age is not None and card.age is not None:
+        explanation += f" Its listed minimum age is {card.age}."
+    if requirements.mode is not None:
+        explanation += f" It is {requirements.mode} according to its mechanics."
+    if requirements.complexity is not None:
+        explanation += f" It meets the requested {requirements.complexity} complexity under the rubric."
+    return explanation
+
+
 def answer(request: Request) -> Answer:
     # A reply that doesn't fit its type raises ValidationError. Every answered call counts toward the
     # limit of 10, so retries only use calls that no later step needs.
@@ -460,10 +595,13 @@ def answer(request: Request) -> Answer:
     if requirements is None:
         return Answer(pick=None, explanation="The request could not be read, so no game could be confirmed.")
 
-    # 2. Five model calls: evaluate one candidate at a time. A reply that doesn't fit is retried once;
-    #    a candidate still without a valid evaluation is never picked.
-    evaluations = []
+    # 2. Candidates in order, the same order the pick is made in. Saving tokens without changing the pick:
+    #    - a game the card already rules out gets no decide call, since no output could make it acceptable;
+    #    - the first acceptable game is the pick, so the games after it are never evaluated.
+    #    A reply that doesn't fit is retried once; a game still without a valid evaluation is never picked.
     for index, candidate in enumerate(request.candidates):
+        if ruled_out_by_card(requirements, candidate):
+            continue
         decision_input = DecisionInput(requirements=requirements, candidate=candidate)
         evaluation = None
         later_candidates = len(request.candidates) - index - 1
@@ -476,93 +614,7 @@ def answer(request: Request) -> Answer:
                 break
             except ValidationError:
                 pass
-        evaluations.append(evaluation)
-
-    # 3. Python selects the first candidate whose checks all pass.
-    for index in range(len(request.candidates)):
-        candidate = request.candidates[index]
-        evaluation = evaluations[index]
-        card = candidate.card
-        if evaluation is None:
-            continue
-
-        # Missing checks must not accidentally count as a pass.
-        if requirements.avoid and len(evaluation.avoid) != len(requirements.avoid):
-            continue
-
-        # If the card provides numbers, check them directly.
-        # Otherwise keep the model's check based on the description.
-        players_check = "PASS"
-        if requirements.players is not None:
-            player_range = card.players
-            if not player_range and evaluation.min_players is not None and evaluation.max_players is not None:
-                player_range = [evaluation.min_players, evaluation.max_players]
-            if not player_range or player_range[0] > player_range[-1]:
-                players_check = "UNKNOWN"
-            elif player_range[0] <= requirements.players <= player_range[-1]:
-                players_check = "PASS"
-            else:
-                players_check = "FAIL"
-
-        time_check = "PASS"
-        if requirements.max_minutes is not None:
-            game_max_minutes = max(card.minutes) if card.minutes else evaluation.max_minutes
-            if game_max_minutes is None:
-                time_check = "UNKNOWN"
-            elif game_max_minutes <= requirements.max_minutes:
-                time_check = "PASS"
-            else:
-                time_check = "FAIL"
-
-        age_check = evaluation.min_age
-        if requirements.min_age is None:
-            age_check = "PASS"
-        elif card.age is not None:
-            if card.age <= requirements.min_age:
-                age_check = "PASS"
-            else:
-                age_check = "FAIL"
-
-        # The rubric defines mode using this exact mechanic tag.
-        mode_check = "PASS"
-        cooperative = "Cooperative Game" in card.mechanics
-        if requirements.mode == "cooperative" and not cooperative:
-            mode_check = "FAIL"
-        if requirements.mode == "competitive" and cooperative:
-            mode_check = "FAIL"
-
-        acceptable = True
-        if players_check != "PASS":
-            acceptable = False
-        if time_check != "PASS":
-            acceptable = False
-        if age_check != "PASS":
-            acceptable = False
-        if mode_check != "PASS":
-            acceptable = False
-        complexity_check = check_complexity(
-            candidate, requirements.complexity,
-            evaluation.easy_rules, evaluation.complex_rules,
-        )
-        if complexity_check != "PASS":
-            acceptable = False
-        for avoided, model_check in zip(requirements.avoid, evaluation.avoid):
-            if check_avoid(candidate, avoided, model_check) != "PASS":
-                acceptable = False
-
-        if acceptable:
-            # Use the final checks, not a model explanation Python may have corrected.
-            explanation = candidate.name + " passed every requested requirement check."
-            if requirements.players is not None and card.players:
-                explanation += f" Its player range is {card.players[0]} to {card.players[-1]}."
-            if requirements.max_minutes is not None and card.minutes:
-                explanation += f" Its maximum listed play time is {max(card.minutes)} minutes."
-            if requirements.min_age is not None and card.age is not None:
-                explanation += f" Its listed minimum age is {card.age}."
-            if requirements.mode is not None:
-                explanation += f" It is {requirements.mode} according to its mechanics."
-            if requirements.complexity is not None:
-                explanation += f" It meets the requested {requirements.complexity} complexity under the rubric."
-            return Answer(pick=candidate.id, explanation=explanation)
+        if evaluation is not None and is_acceptable(requirements, candidate, evaluation):
+            return Answer(pick=candidate.id, explanation=explain(requirements, candidate))
 
     return Answer(pick=None, explanation="No candidate could be confirmed to meet every requirement.")

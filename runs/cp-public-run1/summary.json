@@ -1,0 +1,29 @@
+{
+  "system": "systems/compound-checkpoint.py",
+  "starter_version": "2026-10-05.2",
+  "backend": "course",
+  "model": null,
+  "variant": "compound",
+  "max_calls": 10,
+  "requests_file": "data/public.jsonl",
+  "requests": 150,
+  "errors": 0,
+  "declined": 27,
+  "model_calls": {
+    "total": 900,
+    "max_per_request": 6
+  },
+  "cost_usd": 0.2642,
+  "seconds": 531.2,
+  "overrides": [],
+  "steps": {
+    "decide": {
+      "input": "DecisionInput",
+      "output": "GameEvaluation"
+    },
+    "extract_requirements": {
+      "input": "Request",
+      "output": "Requirements"
+    }
+  }
+}
