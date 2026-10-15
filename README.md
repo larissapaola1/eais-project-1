@@ -44,11 +44,11 @@ can't be scored with `score.py`, because their answers aren't public.
 | File | What it is |
 |---|---|
 | `systems/single.py` | The single-call system: one prompt with the rubric rules, one model call. |
-| `systems/compound.py` | The compound system we submit: v6's steps and prompts, with fewer model calls (see [Cost](#cost-fewer-model-calls)) and the mode change (see [below](#the-change-for-the-largest-group-keep-a-correctly-extracted-mode)). Called `compound-2.py` in the runs made before we renamed it. |
-| `systems/compound-v6.py` | v6, our version after the change below: the same steps, but `decide` runs on all five games. Kept to compare against and to measure step accuracy, since it evaluates every labeled input. |
+| `systems/compound.py` | The compound system we submit (v10): fewer model calls plus the mode change. Runs made before we renamed it call it `compound-2.py`. |
+| `systems/compound-v6.py` | v6: the same steps, but `decide` runs on all five games and there's no mode change. Kept to compare against and to measure step accuracy, since it evaluates every labeled input. |
 | `systems/compound-checkpoint.py` | The compound system exactly as submitted for the checkpoint (commit `ed925a4`), kept to measure against. |
 | `score.py` | Our scorer. |
-| `runs/` | The saved output of every run this README reports. |
+| `runs/` | The saved output of every run this README reports, named `<version>-<requests>-run<N>`: version `single`, `checkpoint` (commit `ed925a4`), `v5`, `v6`, `v7` (v6 with fewer calls, never committed on its own) or `v10` (final); requests `public`, `public10` (first 10), `checkpoint`, `practice` or `labeling`; `-swapextract` when our extraction labels replaced the model's. Every run used gpt-4o-mini-2024-07-18. `runs/old/` holds early drafts and runs the server outage broke, which we don't report. |
 
 ## Our systems
 
@@ -61,8 +61,8 @@ checked from data:
 1. `extract_requirements` (1 call): reads the request and returns the requirements: players, maximum minutes,
    the youngest player's age, mode (cooperative or competitive), complexity (light, medium or heavy) and things to
    avoid (fighting, violence, horror, timer, player elimination). Wishes are kept separately and never checked.
-   Python keeps a mode or complexity only if the model's quote of the request backs it and isn't a wish; for the
-   mode, the rubric's wording in a non-wish sentence of the request is also enough.
+   Python keeps a mode or complexity only if the request backs it outside a wish (see
+   [the mode change](#the-change-keep-a-correctly-extracted-mode)).
 2. `decide` (1 call per game): reads one game and reports facts, not verdicts: the player range and play time
    when the card lacks them, whether the description says the rules are easy or complex, and whether each avoided
    feature is present. Each fact taken from the description must come with a quote that Python finds in the
@@ -73,8 +73,9 @@ checked from data:
    declines. It calls `decide` only for a game whose card doesn't already rule it out, and stops at the first
    acceptable game.
 
-A reply that doesn't fit its type is retried once, within the limit of 10 calls per request. A game still without
-a valid reply is never picked, so every request gets an answer.
+A reply that doesn't fit its type is retried once, within the limit of 10 calls per request, and a game still
+without a valid reply is never picked, so every request gets an answer. We added this after a reply with 0 players
+left P048 without an answer in an early submission (Gradescope check 7); it was already in the checkpoint version.
 
 ## Results
 
@@ -84,16 +85,16 @@ Every run below finished with 0 failed requests. Cost and time are per request.
 
 | System | Run | Score | Cost | Time | Calls |
 |---|---|---|---|---|---|
-| Single-call | `runs/public.jsonl` | 93/150 | $0.00042 | 0.33 s | 1.0 |
-| Single-call | `runs/single-expert-3` | 97/150 | $0.00027 | 0.30 s | 1.0 |
-| Compound, checkpoint version | `runs/cp-public-run1` | 132/150 | $0.00176 | 3.54 s | 6.0 |
-| Compound, checkpoint version | `runs/cp-public-run2` | 133/150 | $0.00176 | 3.45 s | 6.0 |
-| Compound, v6 (`compound-v6.py`) | `runs/v5-expert-public-run2` | 137/150 | $0.00182 | 3.37 s | 6.0 |
-| Compound, v6 (`compound-v6.py`) | `runs/compound-expert-3` | 139/150 | $0.00184 | 3.26 s | 6.0 |
-| Compound, fewer calls, before the mode change | `runs/c2-public-run1` | 138/150 | $0.00057 | 1.04 s | 2.1 |
-| Compound, fewer calls, before the mode change | `runs/c2-public-run2` | 136/150 | $0.00054 | 1.05 s | 2.1 |
-| Compound, final (`compound.py`) | `runs/final-public-run1` | 140/150 | $0.00057 | 1.05 s | 2.1 |
-| Compound, final (`compound.py`) | `runs/final-public-run2` | 142/150 | $0.00054 | 1.05 s | 2.1 |
+| Single-call | `runs/single-public-run2` | 93/150 | $0.00042 | 0.33 s | 1.0 |
+| Single-call | `runs/single-public-run3` | 97/150 | $0.00027 | 0.30 s | 1.0 |
+| Compound, checkpoint version | `runs/checkpoint-public-run1` | 132/150 | $0.00176 | 3.54 s | 6.0 |
+| Compound, checkpoint version | `runs/checkpoint-public-run2` | 133/150 | $0.00176 | 3.45 s | 6.0 |
+| Compound, v6 (`compound-v6.py`) | `runs/v6-public-run1` | 137/150 | $0.00182 | 3.37 s | 6.0 |
+| Compound, v6 (`compound-v6.py`) | `runs/v6-public-run2` | 139/150 | $0.00184 | 3.26 s | 6.0 |
+| Compound, v7: fewer calls, no mode change | `runs/v7-public-run1` | 138/150 | $0.00057 | 1.04 s | 2.1 |
+| Compound, v7: fewer calls, no mode change | `runs/v7-public-run2` | 136/150 | $0.00054 | 1.05 s | 2.1 |
+| Compound, v10, final (`compound.py`) | `runs/v10-public-run1` | 140/150 | $0.00057 | 1.05 s | 2.1 |
+| Compound, v10, final (`compound.py`) | `runs/v10-public-run2` | 142/150 | $0.00054 | 1.05 s | 2.1 |
 
 ### Checkpoint requests (50)
 
@@ -101,16 +102,17 @@ Every run below finished with 0 failed requests. Cost and time are per request.
 |---|---|---|---|
 | Single-call | official checkpoint run (course app, held-out set 2) | 34/50 (68%) | $0.0004 |
 | Compound, checkpoint version | official checkpoint run (course app, held-out set 2) | 44/50 (88%) | $0.0018 |
-| Single-call | `runs/checkpoint-single-2` | 34/50 | $0.00042 |
-| Compound, checkpoint version | `runs/cp-checkpoint-run1` | 45/50 | $0.00180 |
-| Compound, v6 (`compound-v6.py`) | `runs/checkpoint-compound-2` | 45/50 | $0.00184 |
-| Compound, v6 (`compound-v6.py`) | `runs/checkpoint_requests-compound` | 46/50 | $0.00180 |
-| Compound, fewer calls, before the mode change | `runs/checkpoint_requests-compound-2` | 45/50 | $0.00056 |
-| Compound, final (`compound.py`) | `runs/final-checkpoint-run1` | 46/50 | $0.00051 |
+| Single-call | `runs/single-checkpoint-run1` | 34/50 | $0.00042 |
+| Compound, checkpoint version | `runs/checkpoint-checkpoint-run1` | 45/50 | $0.00180 |
+| Compound, v6 (`compound-v6.py`) | `runs/v6-checkpoint-run1` | 45/50 | $0.00184 |
+| Compound, v6 (`compound-v6.py`) | `runs/v6-checkpoint-run2` | 46/50 | $0.00180 |
+| Compound, v7: fewer calls, no mode change | `runs/v7-checkpoint-run1` | 45/50 | $0.00056 |
+| Compound, v10, final (`compound.py`) | `runs/v10-checkpoint-run1` | 46/50 | $0.00055 |
+| Compound, v10, final (`compound.py`) | `runs/v10-checkpoint-run2` | 46/50 | $0.00051 |
 
-The compound system does clearly better than the single-call system, at 1.3 to 2 times the cost per request
-(`compound.py`), or 4 to 7 times for v6; the single-call system's cost varied between its two runs. Two runs of the same version differ by up to 2 requests out of 150,
-because the model's answers vary; we treat differences that small as noise.
+The compound system does clearly better than the single-call system, at 1.3 to 2 times its cost per request
+(4 to 7 times for v6); the single-call system's cost varied between its two runs. Two runs of the same version
+differ by up to 2 requests out of 150, because the model's answers vary; we treat differences that small as noise.
 
 ### Feedback requests (50, unseen)
 
@@ -128,12 +130,11 @@ Step accuracy on the 10 hidden labeling requests:
 
 | Step | Run | Every labeled field right | Per field |
 |---|---|---|---|
-| `extract_requirements` | `runs/labeling-normal-5` (normal run) | 9 of 10 | players, time, age, mode, avoid 10/10; complexity 9/10 |
-| `decide` | `runs/labeling-swap-extract-5` (our extraction labels swapped in) | 43 of 50 (0.86) | players 0.98–1.0, time 1.0, age 1.0, easy rules 0.96, complex rules 0.98, avoid 0.94 |
+| `extract_requirements` | `runs/v6-labeling-run1` (normal run) | 9 of 10 | players, time, age, mode, avoid 10/10; complexity 9/10 |
+| `decide` | `runs/v6-labeling-swapextract-run1` (our extraction labels swapped in) | 43 of 50 (0.86) | players 0.98–1.0, time 1.0, age 1.0, easy rules 0.96, complex rules 0.98, avoid 0.94 |
 
-`decide` has to be measured with our extraction labels swapped in (`--override extract_requirements=...`).
-In a normal run, the model's extraction fills free-text fields (quotes, wishes) that our labels leave empty, so
-`decide`'s inputs almost never match the labeled ones and the accuracy tool finds nothing to compare.
+We measure `decide` with our extraction labels swapped in (`--override extract_requirements=...`), so that its
+inputs match the labeled ones; in a normal run, free-text fields such as quotes and wishes make them differ.
 
 Disagreements we found while checking:
 
@@ -145,18 +146,17 @@ Disagreements we found while checking:
 
 ## Where it fails
 
-### Checkpoint version on the checkpoint requests (`runs/cp-checkpoint-run1`, 45/50)
-
 This is the system we submitted for the checkpoint (`systems/compound-checkpoint.py`, commit `ed925a4`; the course
 app confirms it ran our submission from Tue 13 Oct, 19:06). The official checkpoint run scored 44/50, but the
-course app doesn't list which requests were wrong. The failures below come from our rerun of the same code, which
-scored 45/50; answers vary between runs of the same code, so one official failure may be missing here.
+course app doesn't list which requests were wrong. The failures below come from our rerun of the same code
+(`runs/checkpoint-checkpoint-run1`, 45/50); answers vary between runs of the same code, so one official failure
+may be missing here.
 
 | Request | What went wrong | Group |
 |---|---|---|
 | H1-016 | Call of Cthulhu: The Card Game is a right medium game, but `decide` called its rules complex from "a solid game experience, full of strategy and excitement", so Python rejected it and declined | Wrong rule-difficulty clue |
 | H1-088 | Techno Bowl is a right medium game, but `decide` quoted "complex rules" from "without the need for complex rules", dropping the "without", so Python rejected it and declined | Wrong rule-difficulty clue |
-| H1-082 | "play against each other": the model extracted competitive, but its quote ("we want a game…" for "My husband and I want a game…") wasn't word for word, so the mode was discarded and a cooperative game was picked | Mode dropped |
+| H1-082 | "play against each other": the model extracted competitive, but its quote of the request wasn't word for word, so the mode was discarded and a cooperative game was picked | Mode dropped |
 | H1-096 | "play against each other": same as H1-082, and a cooperative game was picked | Mode dropped |
 | H1-030 | The Voting Game's card has no player count; `decide` reported 3–10 players from "for up to 10 players", inventing the minimum, so the game counted as fitting 6 players | Player count from the description |
 
@@ -178,7 +178,7 @@ outputs, with no model calls. Each single correction turns the wrong answer into
 | H1-030 | `decide` on A: players 3–10 | not given | A → C (right) |
 
 Five failures are too few to rank the groups, so we grouped the same version's failures on the public requests
-too (`runs/cp-public-run1`: 18 wrong, `runs/cp-public-run2`: 17 wrong):
+too (`runs/checkpoint-public-run1`: 18 wrong, `runs/checkpoint-public-run2`: 17 wrong):
 
 | Group | Public run 1 | Public run 2 | Checkpoint | Requests |
 |---|---|---|---|---|
@@ -188,44 +188,103 @@ too (`runs/cp-public-run1`: 18 wrong, `runs/cp-public-run2`: 17 wrong):
 | Complexity clue or card missed | 3 | 3 | 0 | P074, P135, P145 |
 | Other | 2 | 2 | 1 | P023, P043, H1-030 |
 
-The two largest groups are mode dropped and wrong rule-difficulty clues. In the first, the model is right and a
-Python check throws its answer away. In the second, the model takes a quote that exists in the description as
-evidence about the rules, when the quote is about something else.
-
-### v6 on the checkpoint requests (`runs/checkpoint-compound-2`, 45/50)
-
-| Request | What went wrong | Group |
-|---|---|---|
-| H1-067 | "play head to head": the model extracted competitive, but its quote of the request wasn't word for word, so a Python check discarded the mode and a cooperative game was picked | Mode dropped |
-| H1-082 | "play against each other": same as H1-067 | Mode dropped |
-| H1-030 | The Voting Game's card has no player count; the model took one from an unrelated sentence of the description | Invented player count |
-| H1-044 | Munchkin Apocalypse: the model missed a complexity clue in the description, so a right medium game was rejected | Complexity clue missed |
-| H1-074 | Pass the Pigs: the model missed player elimination in the description | Avoid missed |
-
-| Group | Count |
-|---|---|
-| Mode dropped | 2 |
-| Invented player count | 1 |
-| Complexity clue missed | 1 |
-| Avoid missed | 1 |
-
-The same groups explain the 13 misses of the current version on the public requests (`runs/v5-expert-public-run2`):
-mode dropped 6 (P029, P039, P053, P116, P127, P143), invented player count 2 (P043, P100), complexity clue missed
-or invented 3 (P074, P135, P145), avoid wrong 2 (P068, P125). The first group comes from Python, not the model: the
-model extracts the mode correctly, and the check that requires its quote to match the request word for word
-throws it away.
+Mode dropped is the largest group, and wrong rule-difficulty clues the second largest.
 
 ## What we changed
 
-### First change: rule-difficulty clues must talk about the rules
+We made one change for each of the two largest groups, and one change to cost: v6 fixed the rule-difficulty
+clues, v7 is v6 with fewer model calls, and v10, our final system, adds the mode change to v7.
+
+### The change: keep a correctly extracted mode
+
+**Group it addresses:** mode dropped, the largest group of the checkpoint version: 12 failures across its three
+runs (5 and 5 public, 2 checkpoint; P029, P039, P053, P116, P143, H1-082, H1-096).
+
+**What goes wrong.** `extract_requirements` returns the mode together with a quote from the request as evidence.
+A Python check, `explicit_requirement`, keeps the mode only if that quote appears in the request word for word.
+The model gets the mode right but paraphrases the quote: for "My husband and I want a game for the two of us to
+play against each other" (H1-082) it quoted "we want a game for the two of us to play against each other". The
+check then sets the mode to none, Python stops checking cooperative against competitive, and a game with the wrong
+mode can be picked: a cooperative kids' game for H1-082, which asked for play against each other. The model is
+right; the Python check throws its answer away.
+
+**The change** (`systems/compound.py`, in `extract_requirements`): when the quote doesn't match word for word,
+the new function `mode_in_request` looks at the request itself. It keeps the model's mode if a sentence of the
+request contains the rubric's wording for that mode and isn't a wish:
+
+- cooperative: "against the game", "as one team", "team up", "cooperative", "co-op";
+- competitive: "head to head", "against each other", "against one another", "competitive", "free for all";
+- a sentence with "would be nice", "bonus points", "we love" and the like is a wish and doesn't count, as before.
+
+So "It would be nice if the game can be played either PvP or co-op" (H1-030) still gives no mode, and "play
+together" alone still doesn't mean cooperative, as the rubric says. The change only keeps a mode the model
+extracted; it never adds one.
+
+**Prediction**, written before running anything:
+
+1. **Requests it should fix:** public P029, P039, P053, P116, P127, P143; checkpoint H1-067, H1-082. In each, the
+   model extracted the right mode and the quote check discarded it.
+2. **Currently right answers to check again:** every request with a mode requirement, e.g. P031, P090, P101, P129,
+   P134, so the fix doesn't start keeping a mode that the request only wishes for.
+3. **Keep it if** the average of 2 public runs rises by at least 3, none of the rechecked requests turns wrong, and
+   the feedback score doesn't drop. Otherwise we report that it didn't hold up.
+
+**Offline check, before any new run.** The `decide` prompt doesn't use the mode, so v6's recorded outputs stay
+valid when only the mode changes. Replaying v6's four saved runs (`runs/v6-public-run1`, `runs/v6-public-run2`,
+`runs/v6-checkpoint-run1`, `runs/v6-checkpoint-run2`) through the new code, with no model calls, raised the scores
+from 137 to 143, 139 to 144, 45 to 47 and 46 to 48, and no right answer became wrong.
+
+**Real runs.** We compare v10 with v7, the same low-cost code without the change (see
+[Cost](#cost-fewer-model-calls)):
+
+| | v7, before the change | v10, after the change |
+|---|---|---|
+| Public, 2 runs | 138, 136 (`runs/v7-public-run1`, `runs/v7-public-run2`) | 140, 142 (`runs/v10-public-run1`, `runs/v10-public-run2`) |
+| Checkpoint | 45 (`runs/v7-checkpoint-run1`) | 46, 46 (`runs/v10-checkpoint-run1`, `runs/v10-checkpoint-run2`) |
+| Feedback | not run yet | not run yet |
+| Cost and time per request | $0.00056, 1.05 s | $0.00055, 1.05 s |
+
+**Compared with the prediction, request by request:**
+
+1. *Requests it should fix:* all six public requests of the group (P029, P039, P053, P116, P127, P143) are right
+   in both runs after the change; before, P029, P039, P053, P116 and P143 were wrong in both runs. On the
+   checkpoint requests, H1-067 and H1-096 turned right; H1-082 was already right in the run before.
+2. *Rechecked right answers:* P031, P090, P101, P129 and P134 stay right in both runs.
+3. *Answers that turned wrong:* five requests that were right in both runs before are wrong in one run after.
+   We checked each trace; none comes from the change, because in four of them the request has no mode
+   requirement and nothing about the mode changed:
+
+   | Request | First wrong output | Group |
+   |---|---|---|
+   | P006 | `decide` said Senjutsu: Battle For Japan has horror | Avoid wrong |
+   | P141 | `decide` said Warhammer 40,000 and Fief have player elimination | Avoid wrong |
+   | H1-052 | `decide` said Mahé has fighting | Avoid wrong |
+   | P019 | `decide` gave 1822PNW, whose card has no player count, 2 players, quoting just "2", which the quote check found inside "1822" | Player count from the description |
+   | P098 | The mode was kept, rightly ("go head to head"), but the model paraphrased the complexity quote ("I want…" for "we want…"), so the same word-for-word check dropped "heavy", and a light game was picked | Quote check, complexity |
+
+   These are the run-to-run variation we also see between two runs of unchanged code. P098 shows that the
+   word-for-word quote check also drops complexity requirements now and then; the change fixed it only for mode.
+
+**Decision: we keep the change.** The average of the two public runs rose from 137 to 141, more than the 3 we set
+as the threshold; every request of the group is right in both runs; none of the rechecked answers turned wrong,
+and the five new failures come from other groups. The feedback comparison is still to be run.
+
+**What's still wrong** in the two final public runs (8 and 10 failures) and the final checkpoint runs (4 each):
+avoided features judged wrongly from the description (P006, P068, P125, P141, H1-052, H1-074), complexity clues
+missed or dropped (P074, P098, P135, P145, H1-044) and invented player counts (P019, P043, P100, H1-030). The next
+changes we would make: accept a player count from the description only if its quote mentions players and a
+number, and apply the mode change's sentence check to complexity as well.
+
+### Earlier change: rule-difficulty clues must talk about the rules
 
 **Group it addresses:** wrong rule-difficulty clues, the second-largest group of the checkpoint version
 (2 of 5 checkpoint failures, 3 and 5 of the public failures).
 
 **The change** touches three of `decide`'s output fields, `easy_rules`, `complex_rules` and `min_age`, and
-nothing else (commit `71b6630`, with "expert" added in `ec2708e`). We found the problem with our step-accuracy
-check: on the hidden labeling requests, the checkpoint version's `decide` matched our labels on only 25 of 50
-`easy_rules`, 46 of 50 `complex_rules` and 28 of 50 `min_age` values (`runs/labeling-swap-extract-3`).
+nothing else (commit `71b6630`, with "expert" added in `ec2708e`; together they make v6). We found the problem with
+our step-accuracy check: on the hidden labeling requests, the checkpoint version's `decide` matched our labels on
+only 25 of 50 `easy_rules`, 46 of 50 `complex_rules` and 28 of 50 `min_age` values
+(`runs/checkpoint-labeling-swapextract-run2`).
 
 #### `easy_rules` and `complex_rules`: the quote must be about the rules
 
@@ -257,7 +316,8 @@ Four sentences in the `decide` prompt give the same rule with the examples above
 
 *Limit.* The check reads words, not meaning: "a simple character-building system" (one part of Dice & Dragons,
 L06) still counts as easy, and "without the need for complex rules" (H1-088) would still count as complex if the
-model quoted only "complex rules".
+model quoted only "complex rules". H1-088 came out right in all 3 runs after the change only because the model no
+longer reported that clue, perhaps because of the added prompt sentences.
 
 #### `min_age`: Python decides it
 
@@ -274,8 +334,10 @@ reason to FAIL.
 *Effect on answers.* None by itself: `answer()` already ignored the model's age when no age was asked or the card
 listed one. The fix makes the step's output right, so step accuracy and our labels measure what the step does.
 
+#### Results
+
 We wrote no prediction before making this change: we found the problem in our step-accuracy check against our
-labels, before the checkpoint requests were released. The results are:
+labels, before the checkpoint requests were released.
 
 | | Checkpoint version | After the change (v6, `compound-v6.py`) |
 |---|---|---|
@@ -286,16 +348,7 @@ labels, before the checkpoint requests were released. The results are:
 | Feedback score | not recorded yet | not recorded yet |
 
 We keep the change: it fixed every request of its group in every run, and the public score rose by 5 to 6, more
-than the 1 to 2 that two runs of the same version differ by. It doesn't fix every wrong clue: a quote that
-contains rule wording but negates it ("without the need for complex rules", H1-088) still passes the check.
-H1-088 came out right in all 3 runs after the change because the model no longer reported that clue, perhaps
-because of the added prompt sentences; the Python check alone wouldn't have rejected it.
-
-### Other changes since the checkpoint
-
-| Change | Why | Effect |
-|---|---|---|
-| A reply with 0 for "not given" counts as not given; a reply that doesn't fit is retried once or the game is skipped | The version before the checkpoint gave no answer on P048 (Gradescope check 7) | Already in the checkpoint submission (`ed925a4`); every run since has 0 failed requests |
+than the 1 to 2 that two runs of the same version differ by.
 
 ### Cost: fewer model calls
 
@@ -322,7 +375,7 @@ and labeling requests, and on 20 of 20 requests with our labels in place of both
 
 **Measured result** (per request, averaged over the runs in the results tables):
 
-| | v6 (`compound-v6.py`) | Fewer calls (`c2-` runs) | Change |
+| | v6 (`compound-v6.py`) | v7, fewer calls | Change |
 |---|---|---|---|
 | Model calls | 6.0 | 2.1 | −65% |
 | Prompt tokens | 13,528 | 3,837 | −72% |
@@ -333,96 +386,5 @@ and labeling requests, and on 20 of 20 requests with our labels in place of both
 | Public score, 2 runs each | 137, 139 | 138, 136 | within noise |
 | Checkpoint score | 45, 46 | 45 | within noise |
 
-On the checkpoint requests, time per request fell from 3.5 s to 1.0 s and cost from $0.0018 to $0.00056. The score
-differences between the two versions are no larger than between two runs of the same version, which fits with
-the replay: given the same model outputs, both versions pick the same game.
-
-Compared with the single-call system ($0.00027 to $0.00042 per request), the final system costs 1.3 to 2 times as
-much per request, against 4 to 7 times for v6.
-
-### The change for the largest group: keep a correctly extracted mode
-
-**Group it addresses:** mode dropped, the largest group of the checkpoint version: 12 failures across its three
-runs (5 and 5 public, 2 checkpoint; P029, P039, P053, P116, P143, H1-082, H1-096).
-
-**What goes wrong.** `extract_requirements` returns the mode together with a quote from the request as evidence.
-A Python check, `explicit_requirement`, keeps the mode only if that quote appears in the request word for word.
-The model gets the mode right but paraphrases the quote: for "My husband and I want a game for the two of us to
-play against each other" (H1-082) it quoted "we want a game for the two of us to play against each other". The
-check then sets the mode to none, Python stops checking cooperative against competitive, and a game with the wrong
-mode can be picked: a cooperative kids' game for H1-082, which asked for play against each other.
-
-**The change** (`systems/compound.py`, in `extract_requirements`): when the quote doesn't match word for word,
-the new function `mode_in_request` looks at the request itself. It keeps the model's mode if a sentence of the
-request contains the rubric's wording for that mode and isn't a wish:
-
-- cooperative: "against the game", "as one team", "team up", "cooperative", "co-op";
-- competitive: "head to head", "against each other", "against one another", "competitive", "free for all";
-- a sentence with "would be nice", "bonus points", "we love" and the like is a wish and doesn't count, as before.
-
-So "It would be nice if the game can be played either PvP or co-op" (H1-030) still gives no mode, and "play
-together" alone still doesn't mean cooperative, as the rubric says. The change only keeps a mode the model
-extracted; it never adds one.
-
-**Prediction**, written before running anything:
-
-1. **Requests it should fix:** public P029, P039, P053, P116, P127, P143; checkpoint H1-067, H1-082. In each, the
-   model extracted the right mode and the quote check discarded it.
-2. **Currently right answers to check again:** every request with a mode requirement, e.g. P031, P090, P101, P129,
-   P134, so the fix doesn't start keeping a mode that the request only wishes for.
-3. **Keep it if** the average of 2 public runs rises by at least 3, none of the rechecked requests turns wrong, and
-   the feedback score doesn't drop. Otherwise we report that it didn't hold up.
-
-**Offline check, before any new run.** The `decide` prompt doesn't use the mode, so v6's recorded outputs stay
-valid when only the mode changes. We replayed v6's four saved runs through the new code, with the model's recorded
-extraction replies and no model calls:
-
-| Run replayed | Before | With the change | Fixed | Became wrong |
-|---|---|---|---|---|
-| `runs/v5-expert-public-run2` | 137/150 | 143/150 | P029, P039, P053, P116, P127, P143 | none |
-| `runs/compound-expert-3` | 139/150 | 144/150 | P029, P039, P053, P116, P143 | none |
-| `runs/checkpoint-compound-2` | 45/50 | 47/50 | H1-067, H1-082 | none |
-| `runs/checkpoint_requests-compound` | 46/50 | 48/50 | H1-067, H1-096 | none |
-
-Every request in the prediction was fixed in at least one replay, and no right answer became wrong. The change
-also kept the mode on P025, P098 and H1-090, which were right before and stay right.
-
-**Real runs** (`systems/compound.py`, compared with the same low-cost code before the change):
-
-| | Before the change | After the change |
-|---|---|---|
-| Public, 2 runs | 138, 136 (`runs/c2-public-run1`, `runs/c2-public-run2`) | 140, 142 (`runs/final-public-run1`, `runs/final-public-run2`) |
-| Checkpoint | 45 (`runs/checkpoint_requests-compound-2`) | 46 (`runs/final-checkpoint-run1`) |
-| Feedback | not run yet | not run yet |
-| Cost and time per request | $0.00056, 1.05 s | $0.00055, 1.05 s |
-
-**Compared with the prediction, request by request:**
-
-1. *Requests it should fix:* all six public requests of the group (P029, P039, P053, P116, P127, P143) are right
-   in both runs after the change; before, P029, P039, P053, P116 and P143 were wrong in both runs. On the
-   checkpoint requests, H1-067 and H1-096 turned right; H1-082 was already right in the run before.
-2. *Rechecked right answers:* P031, P090, P101, P129 and P134 stay right in both runs.
-3. *Answers that turned wrong:* five requests that were right in both runs before are wrong in one run after.
-   We checked each trace; none comes from the change, because in four of them the request has no mode
-   requirement and nothing about the mode changed:
-
-   | Request | First wrong output | Group |
-   |---|---|---|
-   | P006 | `decide` said Senjutsu: Battle For Japan has horror | Avoid wrong |
-   | P141 | `decide` said Warhammer 40,000 and Fief have player elimination | Avoid wrong |
-   | H1-052 | `decide` said Mahé has fighting | Avoid wrong |
-   | P019 | `decide` gave 1822PNW, whose card has no player count, 2 players, quoting just "2", which the quote check found inside "1822" | Player count from the description |
-   | P098 | The mode was kept, rightly ("go head to head"), but the model paraphrased the complexity quote ("I want…" for "we want…"), so the same word-for-word check dropped "heavy", and a light game was picked | Quote check, complexity |
-
-   These are the run-to-run variation we also see between two runs of unchanged code. P098 shows that the
-   word-for-word quote check also drops complexity requirements now and then; the change fixed it only for mode.
-
-**Decision: we keep the change.** The average of the two public runs rose from 137 to 141, more than the 3 we set
-as the threshold; every request of the group is right in both runs; none of the rechecked answers turned wrong,
-and the five new failures come from other groups. The feedback comparison is still to be run.
-
-**What's still wrong** in the two final public runs (8 and 10 failures) and the final checkpoint run (4): avoided
-features judged wrongly from the description (P006, P068, P125, P141, H1-052, H1-074), complexity clues missed or
-dropped (P074, P098, P135, P145, H1-044) and invented player counts (P019, P043, P100, H1-030). The next changes we
-would make: accept a player count from the description only if its quote mentions players and a number, and apply
-the mode change's sentence check to complexity as well.
+The score differences are no larger than between two runs of the same version, which fits with the replay: given
+the same model outputs, both versions pick the same game.
