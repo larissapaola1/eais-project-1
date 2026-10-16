@@ -110,6 +110,7 @@ can't be scored with `score.py`, because their answers aren't public.
 against the rubric and to pick an accepted game or decline.
 
 ```mermaid
+%%{init: {"flowchart": {"htmlLabels": false}}}%%
 flowchart TD
     A["Request + 5 games"] --> B(["Label each game and pick one,<br/>according to the prompt<br/>model, 1 call"])
     B --> C["Pick, or decline"]
@@ -134,6 +135,7 @@ checked from data:
    acceptable game.
 
 ```mermaid
+%%{init: {"flowchart": {"htmlLabels": false}}}%%
 flowchart TD
     A["Request + 5 games"] --> B(["1. Extract requirements<br/>model, 1 call"])
     B --> C(["2. Read each description<br/>model, 1 call per game<br/>not ruled out by its card"])
