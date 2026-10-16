@@ -110,11 +110,9 @@ can't be scored with `score.py`, because their answers aren't public.
 against the rubric and to pick an accepted game or decline.
 
 ```mermaid
-%%{init: {"flowchart": {"htmlLabels": false}}}%%
-flowchart LR
-    R["Request + 5 games"] --> P["One prompt with the rubric"]
-    P --> M(["One model call"])
-    M --> A["Pick or decline"]
+flowchart TD
+    A["Request + 5 games"] --> B(["Label each game and pick one,<br/>according to the prompt<br/>model, 1 call"])
+    B --> C["Pick, or decline"]
 ```
 
 **Compound** (`systems/compound.py`). Two model steps, then plain Python for every rubric rule that can be
@@ -136,15 +134,14 @@ checked from data:
    acceptable game.
 
 ```mermaid
-%%{init: {"flowchart": {"htmlLabels": false}}}%%
-flowchart LR
-    A["Request + 5 games"] --> B(["1. Extract requirements"])
-    B --> C(["2. Read each game"])
-    C --> D["3. Check the rubric"]
-    D --> E["Pick the first that passes"]
+flowchart TD
+    A["Request + 5 games"] --> B(["1. Extract requirements<br/>model, 1 call"])
+    B --> C(["2. Read each description<br/>model, 1 call per game<br/>not ruled out by its card"])
+    C --> D["3. Check the rubric<br/>Python"]
+    D --> E["First game that passes,<br/>or decline"]
 ```
 
-Steps 1 and 2 are model calls (rounded boxes); step 3 is plain Python. Several games can pass the checks; the
+Steps 1 and 2 are model calls; step 3 is plain Python. Several games can pass the checks; the
 system picks the first one, in order A to E, and declines if none passes.
 
 A reply that doesn't fit its type is retried once, within the limit of 10 calls per request, and a game still
